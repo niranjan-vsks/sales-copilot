@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Sales Copilot - Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#ff4400",
+                        "background-light": "#f8f6f5",
+                        "background-dark": "#0f0f10",
+                    },
+                    fontFamily: {
+                        "display": ["Space Grotesk"]
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                },
+            },
+        }
+    </script>
+<style>
+        body {
+            font-family: "Space Grotesk", sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-background-light dark:bg-background-dark text-slate-900 dark:text-slate-100 min-h-screen">
+<div class="relative flex flex-col min-h-screen">
+<!-- TopNavBar -->
+<header class="flex items-center justify-between border-b border-slate-200 dark:border-[#2a2a2d] bg-white dark:bg-[#0f0f10] px-6 py-3 sticky top-0 z-50">
+<div class="flex items-center gap-8">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 bg-primary flex items-center justify-center rounded">
+<span class="material-symbols-outlined text-white text-xl">rocket_launch</span>
+</div>
+<h2 class="text-slate-900 dark:text-white text-lg font-bold tracking-tight">Sales Copilot</h2>
+</div>
+<nav class="hidden md:flex items-center gap-6">
+<a class="text-primary text-sm font-semibold border-b-2 border-primary pb-1" href="#">Dashboard</a>
+<a class="text-slate-500 dark:text-slate-400 text-sm font-medium hover:text-primary transition-colors" href="#">Chat</a>
+<a class="text-slate-500 dark:text-slate-400 text-sm font-medium hover:text-primary transition-colors" href="#">Activities</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<button class="p-2 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-[#2a2a2d] transition-colors">
+<span class="material-symbols-outlined">light_mode</span>
+</button>
+<button class="p-2 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-[#2a2a2d] transition-colors relative">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute top-2 right-2 w-2 h-2 bg-primary rounded-full"></span>
+</button>
+<div class="flex items-center gap-3 ml-2 pl-4 border-l border-slate-200 dark:border-[#2a2a2d]">
+<div class="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-primary font-bold text-xs">JS</div>
+</div>
+</div>
+</header>
+<main class="max-w-6xl w-full mx-auto px-6 py-10 flex-1">
+<!-- Header Section -->
+<div class="mb-10">
+<h1 class="text-3xl font-bold dark:text-white mb-2">Workflow Library</h1>
+<p class="text-slate-500 dark:text-slate-400 text-base">Click Run to execute any automation</p>
+</div>
+<!-- Workflow Grid -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-16">
+<!-- Active Card -->
+<div class="bg-white dark:bg-[#141416] border border-slate-200 dark:border-[#2a2a2d] p-6 hover:border-primary/50 transition-colors group">
+<div class="flex justify-between items-start mb-6">
+<div class="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
+<span class="material-symbols-outlined text-primary">dynamic_feed</span>
+</div>
+<span class="px-2 py-1 bg-green-500/10 text-green-500 text-[10px] font-bold uppercase tracking-wider rounded">Live</span>
+</div>
+<h3 class="text-lg font-bold mb-2">Log D365 Activity</h3>
+<p class="text-slate-500 dark:text-slate-400 text-sm mb-6 line-clamp-2">Auto-create phone calls, tasks and interactions directly in Dynamics 365.</p>
+<button class="w-full bg-primary hover:bg-primary/90 text-white font-bold py-2.5 transition-colors flex items-center justify-center gap-2">
+<span class="material-symbols-outlined text-sm">play_arrow</span>
+                        Run Workflow
+                    </button>
+</div>
+<!-- Coming Soon: Mail -->
+<div class="bg-white dark:bg-[#141416] border border-slate-200 dark:border-[#2a2a2d] p-6 opacity-60 grayscale group">
+<div class="flex justify-between items-start mb-6">
+<div class="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+<span class="material-symbols-outlined text-slate-400">mail</span>
+</div>
+<span class="px-2 py-1 bg-slate-500/10 text-slate-500 text-[10px] font-bold uppercase tracking-wider rounded">Soon</span>
+</div>
+<h3 class="text-lg font-bold mb-2">Sync Emails</h3>
+<p class="text-slate-500 dark:text-slate-400 text-sm mb-6 line-clamp-2">Automatic tracking and analysis of sales communication threads.</p>
+<button class="w-full border border-slate-300 dark:border-slate-700 text-slate-400 font-bold py-2.5 cursor-not-allowed">
+                        Coming Soon
+                    </button>
+</div>
+<!-- Coming Soon: Search -->
+<div class="bg-white dark:bg-[#141416] border border-slate-200 dark:border-[#2a2a2d] p-6 opacity-60 grayscale group">
+<div class="flex justify-between items-start mb-6">
+<div class="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+<span class="material-symbols-outlined text-slate-400">search</span>
+</div>
+<span class="px-2 py-1 bg-slate-500/10 text-slate-500 text-[10px] font-bold uppercase tracking-wider rounded">Soon</span>
+</div>
+<h3 class="text-lg font-bold mb-2">Search Leads</h3>
+<p class="text-slate-500 dark:text-slate-400 text-sm mb-6 line-clamp-2">AI-powered prospect discovery across multiple internal databases.</p>
+<button class="w-full border border-slate-300 dark:border-slate-700 text-slate-400 font-bold py-2.5 cursor-not-allowed">
+                        Coming Soon
+                    </button>
+</div>
+<!-- Coming Soon: Calendar -->
+<div class="bg-white dark:bg-[#141416] border border-slate-200 dark:border-[#2a2a2d] p-6 opacity-60 grayscale group">
+<div class="flex justify-between items-start mb-6">
+<div class="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+<span class="material-symbols-outlined text-slate-400">calendar_month</span>
+</div>
+<span class="px-2 py-1 bg-slate-500/10 text-slate-500 text-[10px] font-bold uppercase tracking-wider rounded">Soon</span>
+</div>
+<h3 class="text-lg font-bold mb-2">Update Calendar</h3>
+<p class="text-slate-500 dark:text-slate-400 text-sm mb-6 line-clamp-2">Intelligent scheduling and meeting slot optimization.</p>
+<button class="w-full border border-slate-300 dark:border-slate-700 text-slate-400 font-bold py-2.5 cursor-not-allowed">
+                        Coming Soon
+                    </button>
+</div>
+<!-- Coming Soon: FileText -->
+<div class="bg-white dark:bg-[#141416] border border-slate-200 dark:border-[#2a2a2d] p-6 opacity-60 grayscale group">
+<div class="flex justify-between items-start mb-6">
+<div class="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+<span class="material-symbols-outlined text-slate-400">description</span>
+</div>
+<span class="px-2 py-1 bg-slate-500/10 text-slate-500 text-[10px] font-bold uppercase tracking-wider rounded">Soon</span>
+</div>
+<h3 class="text-lg font-bold mb-2">Process Files</h3>
+<p class="text-slate-500 dark:text-slate-400 text-sm mb-6 line-clamp-2">Batch processing of invoices, RFPs, and customer documents.</p>
+<button class="w-full border border-slate-300 dark:border-slate-700 text-slate-400 font-bold py-2.5 cursor-not-allowed">
+                        Coming Soon
+                    </button>
+</div>
+<!-- Coming Soon: Bell -->
+<div class="bg-white dark:bg-[#141416] border border-slate-200 dark:border-[#2a2a2d] p-6 opacity-60 grayscale group">
+<div class="flex justify-between items-start mb-6">
+<div class="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+<span class="material-symbols-outlined text-slate-400">notifications_active</span>
+</div>
+<span class="px-2 py-1 bg-slate-500/10 text-slate-500 text-[10px] font-bold uppercase tracking-wider rounded">Soon</span>
+</div>
+<h3 class="text-lg font-bold mb-2">Alert Notifications</h3>
+<p class="text-slate-500 dark:text-slate-400 text-sm mb-6 line-clamp-2">Real-time alerts for high-priority lead interactions.</p>
+<button class="w-full border border-slate-300 dark:border-slate-700 text-slate-400 font-bold py-2.5 cursor-not-allowed">
+                        Coming Soon
+                    </button>
+</div>
+</div>
+<!-- Recent Executions Section -->
+<div class="mb-6">
+<h2 class="text-2xl font-bold dark:text-white mb-6">Recent Executions</h2>
+<div class="overflow-x-auto border border-slate-200 dark:border-[#2a2a2d] bg-white dark:bg-[#141416]">
+<table class="w-full text-left">
+<thead class="bg-slate-50 dark:bg-[#0f0f10] border-b border-slate-200 dark:border-[#2a2a2d]">
+<tr>
+<th class="px-6 py-4 text-xs font-bold uppercase tracking-wider dark:text-slate-400">Workflow</th>
+<th class="px-6 py-4 text-xs font-bold uppercase tracking-wider dark:text-slate-400">Status</th>
+<th class="px-6 py-4 text-xs font-bold uppercase tracking-wider dark:text-slate-400">Triggered by</th>
+<th class="px-6 py-4 text-xs font-bold uppercase tracking-wider dark:text-slate-400">Duration</th>
+<th class="px-6 py-4 text-xs font-bold uppercase tracking-wider dark:text-slate-400 text-right">Timestamp</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-slate-200 dark:divide-[#2a2a2d]">
+<tr class="hover:bg-slate-50 dark:hover:bg-[#1c1c1f] transition-colors">
+<td class="px-6 py-4 font-medium">Log D365 Activity</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700 dark:bg-green-500/10 dark:text-green-400">
+<span class="w-1.5 h-1.5 rounded-full bg-green-500"></span> Success
+                                    </span>
+</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm">System Scheduler</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm">1.2s</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm text-right">2 mins ago</td>
+</tr>
+<tr class="hover:bg-slate-50 dark:hover:bg-[#1c1c1f] transition-colors">
+<td class="px-6 py-4 font-medium">Log D365 Activity</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400">
+<span class="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span> Running
+                                    </span>
+</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm">John Smith</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm">0.5s</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm text-right">5 mins ago</td>
+</tr>
+<tr class="hover:bg-slate-50 dark:hover:bg-[#1c1c1f] transition-colors">
+<td class="px-6 py-4 font-medium">Log D365 Activity</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700 dark:bg-red-500/10 dark:text-red-400">
+<span class="w-1.5 h-1.5 rounded-full bg-red-500"></span> Failed
+                                    </span>
+</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm">API Webhook</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm">0.8s</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm text-right">15 mins ago</td>
+</tr>
+<tr class="hover:bg-slate-50 dark:hover:bg-[#1c1c1f] transition-colors">
+<td class="px-6 py-4 font-medium">Log D365 Activity</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700 dark:bg-green-500/10 dark:text-green-400">
+<span class="w-1.5 h-1.5 rounded-full bg-green-500"></span> Success
+                                    </span>
+</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm">System Scheduler</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm">1.1s</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm text-right">1 hour ago</td>
+</tr>
+<tr class="hover:bg-slate-50 dark:hover:bg-[#1c1c1f] transition-colors">
+<td class="px-6 py-4 font-medium">Log D365 Activity</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700 dark:bg-green-500/10 dark:text-green-400">
+<span class="w-1.5 h-1.5 rounded-full bg-green-500"></span> Success
+                                    </span>
+</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm">John Smith</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm">2.3s</td>
+<td class="px-6 py-4 text-slate-500 dark:text-slate-400 text-sm text-right">3 hours ago</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</main>
+<!-- Footer -->
+<footer class="border-t border-slate-200 dark:border-[#2a2a2d] px-6 py-8 mt-auto">
+<div class="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+<p class="text-slate-500 dark:text-slate-400 text-sm">© 2024 Sales Copilot. Powered by Advanced AI.</p>
+<div class="flex gap-6">
+<a class="text-slate-500 dark:text-slate-400 text-xs hover:text-primary transition-colors" href="#">Privacy Policy</a>
+<a class="text-slate-500 dark:text-slate-400 text-xs hover:text-primary transition-colors" href="#">Terms of Service</a>
+<a class="text-slate-500 dark:text-slate-400 text-xs hover:text-primary transition-colors" href="#">Documentation</a>
+</div>
+</div>
+</footer>
+</div>
+</body></html>

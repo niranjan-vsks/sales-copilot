@@ -38,6 +38,20 @@ logger = logging.getLogger(__name__)
 SESSION_EXPIRY_DAYS = 7
 INTERNAL_KEY = os.environ.get('INTERNAL_KEY', '')
 FRONTEND_URL = os.environ.get('FRONTEND_URL', '')
+D365_ORG_URL = os.environ.get('D365_ORG_URL', '')
+
+_D365_ENTITY_MAP = {
+    "phonecall": "phonecalls",
+    "task": "tasks",
+    "email": "emails",
+    "appointment": "appointments",
+}
+_D365_SUBJECT_PREFIX = {
+    "phonecall": "Call",
+    "task": "Task",
+    "email": "Email",
+    "appointment": "Meeting",
+}
 
 
 # ============== Pydantic Models ==============
@@ -253,6 +267,48 @@ async def token_for_n8n(request: Request):
         raise HTTPException(status_code=401, detail="Could not retrieve access token")
 
 
+# ============== D365 Activity Helper ==============
+
+async def _execute_d365_activity(user: User, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Direct Dataverse API call for log-d365-activity workflow (beta path, no N8N)."""
+    access_token = await get_access_token(user.user_id, db)
+    d365 = D365Client(access_token)
+
+    activity_type = params.get("activity_type", "phonecall")
+    entity_set = _D365_ENTITY_MAP.get(activity_type, "phonecalls")
+    account = params.get("account", "")
+    duration = int(params.get("duration_minutes", 30))
+    notes = params.get("notes", "")
+
+    subject_prefix = _D365_SUBJECT_PREFIX.get(activity_type, "Activity")
+    subject = f"{subject_prefix} with {account}" if account else subject_prefix
+
+    payload: Dict[str, Any] = {
+        "subject": subject,
+        "actualdurationminutes": duration,
+        "description": notes,
+    }
+    # Mark phone calls and tasks as completed immediately
+    if activity_type in ("phonecall", "task"):
+        payload["statecode"] = 1
+        payload["statuscode"] = 4
+
+    record = await d365.create_activity(entity_set, payload)
+    record_id = record.get("activityid") or record.get("id", "")
+
+    record_url = None
+    if record_id and D365_ORG_URL:
+        entity_name = entity_set.rstrip("s")  # phonecalls → phonecall
+        record_url = f"{D365_ORG_URL}/main.aspx?etn={entity_name}&id={record_id}&pagetype=entityrecord"
+
+    return {
+        "status": "success",
+        "d365_record_id": record_id,
+        "record_url": record_url,
+        "entity_set": entity_set,
+    }
+
+
 # ============== Workflow Routes ==============
 
 DEFAULT_WORKFLOWS = [
@@ -289,10 +345,14 @@ async def execute_workflow(body: WorkflowExecuteRequest, request: Request):
     })
 
     try:
-        result = await trigger_workflow(
-            workflow_id=body.workflow_id,
-            payload={**body.params, "user_id": user.user_id, "execution_id": execution_id}
-        )
+        if body.workflow_id == "log-d365-activity":
+            result = await _execute_d365_activity(user, body.params)
+        else:
+            result = await trigger_workflow(
+                workflow_id=body.workflow_id,
+                payload={**body.params, "user_id": user.user_id, "execution_id": execution_id},
+            )
+
         await db.workflow_executions.update_one(
             {"id": execution_id},
             {"$set": {
@@ -300,20 +360,22 @@ async def execute_workflow(body: WorkflowExecuteRequest, request: Request):
                 "result": result,
                 "d365_record_id": result.get("d365_record_id"),
                 "duration_ms": result.get("duration_ms"),
-                "completed_at": datetime.now(timezone.utc)
-            }}
+                "completed_at": datetime.now(timezone.utc),
+            }},
         )
         return {
             "execution_id": execution_id,
             "status": result.get("status", "success"),
             "result": result,
-            "d365_record_url": result.get("record_url")
+            "d365_record_url": result.get("record_url"),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Workflow execution error: {e}")
         await db.workflow_executions.update_one(
             {"id": execution_id},
-            {"$set": {"status": "failed", "error_message": str(e)}}
+            {"$set": {"status": "failed", "error_message": str(e)}},
         )
         raise HTTPException(status_code=500, detail=str(e))
 

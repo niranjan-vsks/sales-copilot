@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Activity Log - Sales Copilot</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#ff4400",
+                        "background-light": "#f8f6f5",
+                        "background-dark": "#23140f",
+                    },
+                    fontFamily: {
+                        "display": ["Space Grotesk", "sans-serif"]
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                },
+            },
+        }
+    </script>
+</head>
+<body class="bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100 min-h-screen">
+<div class="flex h-screen overflow-hidden">
+<!-- Sidebar Navigation -->
+<aside class="w-64 border-r border-primary/10 bg-background-light dark:bg-background-dark flex flex-col shrink-0">
+<div class="p-6 flex items-center gap-3">
+<div class="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-white">
+<span class="material-symbols-outlined">rocket_launch</span>
+</div>
+<div>
+<h1 class="text-base font-bold leading-none">Sales Copilot</h1>
+<p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Enterprise Edition</p>
+</div>
+</div>
+<nav class="flex-1 px-4 space-y-1">
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 dark:text-slate-400 hover:bg-primary/10 hover:text-primary rounded-lg transition-colors" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+<span class="text-sm font-medium">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 bg-primary/20 text-primary rounded-lg transition-colors" href="#">
+<span class="material-symbols-outlined text-fill-1">history</span>
+<span class="text-sm font-medium">Activities</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 dark:text-slate-400 hover:bg-primary/10 hover:text-primary rounded-lg transition-colors" href="#">
+<span class="material-symbols-outlined">work</span>
+<span class="text-sm font-medium">Opportunities</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 dark:text-slate-400 hover:bg-primary/10 hover:text-primary rounded-lg transition-colors" href="#">
+<span class="material-symbols-outlined">group</span>
+<span class="text-sm font-medium">Contacts</span>
+</a>
+<div class="pt-4 mt-4 border-t border-primary/10">
+<a class="flex items-center gap-3 px-3 py-2 text-slate-600 dark:text-slate-400 hover:bg-primary/10 hover:text-primary rounded-lg transition-colors" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="text-sm font-medium">Settings</span>
+</a>
+</div>
+</nav>
+<div class="p-4 border-t border-primary/10">
+<div class="flex items-center gap-3 p-2">
+<div class="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-800 overflow-hidden">
+<img alt="User Profile" class="w-full h-full object-cover" data-alt="Corporate headshot of a male sales executive" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBFjm4P8UqdXDnXv4lwjQWt6FvxK7Rv1L1TjxdP4MQSDi2D6IMLd79cNlEk_UwJ6qokxAVYXGZUDAKrIbHI156qxcaEop2B1WbJvkEcOfLdkWyZUKaEDn-77yjLr9E-1cmw09sCyVTe9B1rcsBSEnL4MW4Fvb0OLEjjv4l-OuOMA2iZPQrUf0ivgzxO17FulvR4BtDR4RgodFn-DCeoaix6D3OcIb5NxNVrffawpI1TutwZL0jAuC2rf4hUcDkPgYqZa-8mDprEu-0"/>
+</div>
+<div class="flex-1 overflow-hidden">
+<p class="text-xs font-medium truncate">Alex Rivera</p>
+<p class="text-[10px] text-slate-500 dark:text-slate-400 truncate">Senior Lead</p>
+</div>
+<span class="material-symbols-outlined text-slate-400 text-sm">more_vert</span>
+</div>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="flex-1 overflow-y-auto bg-background-light dark:bg-background-dark">
+<div class="max-w-7xl mx-auto p-8">
+<!-- Header Section -->
+<header class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+<div>
+<h2 class="text-3xl font-bold tracking-tight text-slate-900 dark:text-slate-100">Activity Log</h2>
+<p class="text-slate-500 dark:text-slate-400 mt-1">Monitor and manage all sales interactions and D365 synchronizations.</p>
+</div>
+<div class="flex items-center gap-3">
+<button class="flex items-center gap-2 px-4 py-2 bg-slate-100 dark:bg-primary/10 border border-slate-200 dark:border-primary/20 rounded-lg text-sm font-medium">
+<span class="material-symbols-outlined text-sm">calendar_today</span>
+<span>Last 30 Days</span>
+<span class="material-symbols-outlined text-sm">expand_more</span>
+</button>
+<button class="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-lg text-sm font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all">
+<span class="material-symbols-outlined text-sm">download</span>
+<span>Export Data</span>
+</button>
+</div>
+</header>
+<!-- Stats Grid -->
+<section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+<div class="p-6 bg-white dark:bg-primary/5 border border-slate-200 dark:border-primary/20 rounded-xl">
+<div class="flex justify-between items-start">
+<p class="text-sm font-medium text-slate-500 dark:text-slate-400">Total Logged</p>
+<span class="material-symbols-outlined text-primary">analytics</span>
+</div>
+<p class="text-3xl font-bold mt-2">1,284</p>
+<div class="flex items-center gap-1 mt-2 text-emerald-500 text-xs font-bold">
+<span class="material-symbols-outlined text-xs">trending_up</span>
+<span>+12.5% vs last month</span>
+</div>
+</div>
+<div class="p-6 bg-white dark:bg-primary/5 border border-slate-200 dark:border-primary/20 rounded-xl">
+<div class="flex justify-between items-start">
+<p class="text-sm font-medium text-slate-500 dark:text-slate-400">Success Rate</p>
+<span class="material-symbols-outlined text-primary">check_circle</span>
+</div>
+<p class="text-3xl font-bold mt-2">98.2%</p>
+<div class="flex items-center gap-1 mt-2 text-emerald-500 text-xs font-bold">
+<span class="material-symbols-outlined text-xs">trending_up</span>
+<span>+0.5% vs last week</span>
+</div>
+</div>
+<div class="p-6 bg-white dark:bg-primary/5 border border-slate-200 dark:border-primary/20 rounded-xl">
+<div class="flex justify-between items-start">
+<p class="text-sm font-medium text-slate-500 dark:text-slate-400">Time Saved</p>
+<span class="material-symbols-outlined text-primary">bolt</span>
+</div>
+<p class="text-3xl font-bold mt-2">42h</p>
+<div class="flex items-center gap-1 mt-2 text-emerald-500 text-xs font-bold">
+<span class="material-symbols-outlined text-xs">add</span>
+<span>8h extra this month</span>
+</div>
+</div>
+<div class="p-6 bg-white dark:bg-primary/5 border border-slate-200 dark:border-primary/20 rounded-xl">
+<div class="flex justify-between items-start">
+<p class="text-sm font-medium text-slate-500 dark:text-slate-400">D365 Sync</p>
+<span class="material-symbols-outlined text-primary">sync</span>
+</div>
+<p class="text-3xl font-bold mt-2">Synced</p>
+<div class="flex items-center gap-1 mt-2 text-slate-500 dark:text-slate-400 text-xs font-bold">
+<span class="material-symbols-outlined text-xs">update</span>
+<span>Last sync: 2 mins ago</span>
+</div>
+</div>
+</section>
+<!-- Filter Bar -->
+<div class="bg-white dark:bg-primary/5 border border-slate-200 dark:border-primary/20 rounded-t-xl p-4 flex flex-col md:flex-row gap-4 items-center justify-between">
+<div class="relative w-full md:w-96">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xl">search</span>
+<input class="w-full pl-10 pr-4 py-2 bg-slate-100 dark:bg-background-dark border-none rounded-lg text-sm focus:ring-2 focus:ring-primary focus:outline-none transition-all placeholder:text-slate-500" placeholder="Search accounts or activities..." type="text"/>
+</div>
+<div class="flex gap-3 w-full md:w-auto">
+<select class="flex-1 md:w-40 py-2 pl-3 pr-8 bg-slate-100 dark:bg-background-dark border-none rounded-lg text-sm focus:ring-2 focus:ring-primary text-slate-600 dark:text-slate-300">
+<option>Activity Type</option>
+<option>Email</option>
+<option>Call</option>
+<option>Meeting</option>
+</select>
+<select class="flex-1 md:w-40 py-2 pl-3 pr-8 bg-slate-100 dark:bg-background-dark border-none rounded-lg text-sm focus:ring-2 focus:ring-primary text-slate-600 dark:text-slate-300">
+<option>All Status</option>
+<option>Success</option>
+<option>Pending</option>
+<option>Failed</option>
+</select>
+</div>
+</div>
+<!-- Table Section -->
+<div class="bg-white dark:bg-primary/5 border-x border-b border-slate-200 dark:border-primary/20 rounded-b-xl overflow-x-auto">
+<table class="w-full text-left border-collapse min-w-[1000px]">
+<thead>
+<tr class="border-b border-slate-200 dark:border-primary/10">
+<th class="px-6 py-4 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Account Name</th>
+<th class="px-6 py-4 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Activity Type</th>
+<th class="px-6 py-4 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Logged By</th>
+<th class="px-6 py-4 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">D365 Record</th>
+<th class="px-6 py-4 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Status</th>
+<th class="px-6 py-4 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-right">Timestamp</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-slate-100 dark:divide-primary/10">
+<!-- Row 1 -->
+<tr class="hover:bg-slate-50 dark:hover:bg-primary/10 transition-colors">
+<td class="px-6 py-4 font-medium">Acme Corp Ltd.</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">
+                                        Email
+                                    </span>
+</td>
+<td class="px-6 py-4 flex items-center gap-2">
+<div class="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+<span class="text-sm">Alex Rivera</span>
+</td>
+<td class="px-6 py-4">
+<a class="text-primary hover:underline text-sm flex items-center gap-1" href="#">
+<span class="material-symbols-outlined text-xs">link</span>
+                                        REQ-2024-001
+                                    </a>
+</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center gap-1 text-emerald-500 text-sm">
+<span class="material-symbols-outlined text-[18px]">check_circle</span>
+                                        Synced
+                                    </span>
+</td>
+<td class="px-6 py-4 text-right text-sm text-slate-500 dark:text-slate-400">Today, 2:45 PM</td>
+</tr>
+<!-- Row 2 -->
+<tr class="hover:bg-slate-50 dark:hover:bg-primary/10 transition-colors">
+<td class="px-6 py-4 font-medium">Global Logistics S.A.</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400">
+                                        Meeting
+                                    </span>
+</td>
+<td class="px-6 py-4 flex items-center gap-2">
+<div class="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+<span class="text-sm">Sarah Jenkins</span>
+</td>
+<td class="px-6 py-4">
+<a class="text-primary hover:underline text-sm flex items-center gap-1" href="#">
+<span class="material-symbols-outlined text-xs">link</span>
+                                        OPP-8843-XY
+                                    </a>
+</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center gap-1 text-emerald-500 text-sm">
+<span class="material-symbols-outlined text-[18px]">check_circle</span>
+                                        Synced
+                                    </span>
+</td>
+<td class="px-6 py-4 text-right text-sm text-slate-500 dark:text-slate-400">Today, 11:12 AM</td>
+</tr>
+<!-- Row 3 -->
+<tr class="hover:bg-slate-50 dark:hover:bg-primary/10 transition-colors">
+<td class="px-6 py-4 font-medium">TechNova Inc.</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400">
+                                        Call
+                                    </span>
+</td>
+<td class="px-6 py-4 flex items-center gap-2">
+<div class="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+<span class="text-sm">Alex Rivera</span>
+</td>
+<td class="px-6 py-4">
+<a class="text-primary hover:underline text-sm flex items-center gap-1" href="#">
+<span class="material-symbols-outlined text-xs">link</span>
+                                        LEA-9001-Z
+                                    </a>
+</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center gap-1 text-amber-500 text-sm">
+<span class="material-symbols-outlined text-[18px]">pending</span>
+                                        Pending
+                                    </span>
+</td>
+<td class="px-6 py-4 text-right text-sm text-slate-500 dark:text-slate-400">Yesterday, 4:30 PM</td>
+</tr>
+<!-- Row 4 -->
+<tr class="hover:bg-slate-50 dark:hover:bg-primary/10 transition-colors">
+<td class="px-6 py-4 font-medium">Stellar Systems</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">
+                                        Email
+                                    </span>
+</td>
+<td class="px-6 py-4 flex items-center gap-2">
+<div class="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+<span class="text-sm">Marcus Chen</span>
+</td>
+<td class="px-6 py-4">
+<a class="text-primary hover:underline text-sm flex items-center gap-1" href="#">
+<span class="material-symbols-outlined text-xs">link</span>
+                                        REQ-2024-002
+                                    </a>
+</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center gap-1 text-rose-500 text-sm">
+<span class="material-symbols-outlined text-[18px]">error</span>
+                                        Failed
+                                    </span>
+</td>
+<td class="px-6 py-4 text-right text-sm text-slate-500 dark:text-slate-400">Yesterday, 1:15 PM</td>
+</tr>
+<!-- Row 5 -->
+<tr class="hover:bg-slate-50 dark:hover:bg-primary/10 transition-colors">
+<td class="px-6 py-4 font-medium">Innova Design</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400">
+                                        Meeting
+                                    </span>
+</td>
+<td class="px-6 py-4 flex items-center gap-2">
+<div class="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-700"></div>
+<span class="text-sm">Sarah Jenkins</span>
+</td>
+<td class="px-6 py-4">
+<a class="text-primary hover:underline text-sm flex items-center gap-1" href="#">
+<span class="material-symbols-outlined text-xs">link</span>
+                                        OPP-8844-AB
+                                    </a>
+</td>
+<td class="px-6 py-4">
+<span class="inline-flex items-center gap-1 text-emerald-500 text-sm">
+<span class="material-symbols-outlined text-[18px]">check_circle</span>
+                                        Synced
+                                    </span>
+</td>
+<td class="px-6 py-4 text-right text-sm text-slate-500 dark:text-slate-400">Oct 24, 10:00 AM</td>
+</tr>
+</tbody>
+</table>
+<!-- Pagination -->
+<footer class="p-4 flex items-center justify-between bg-slate-50 dark:bg-background-dark/50 border-t border-slate-200 dark:border-primary/10">
+<p class="text-sm text-slate-500 dark:text-slate-400">Showing <span class="font-medium text-slate-900 dark:text-slate-100">1</span> to <span class="font-medium text-slate-900 dark:text-slate-100">10</span> of <span class="font-medium text-slate-900 dark:text-slate-100">1,284</span> entries</p>
+<div class="flex gap-2">
+<button class="px-3 py-1 bg-white dark:bg-primary/5 border border-slate-200 dark:border-primary/20 rounded-lg text-sm disabled:opacity-50">Previous</button>
+<button class="px-3 py-1 bg-primary text-white rounded-lg text-sm font-medium">1</button>
+<button class="px-3 py-1 bg-white dark:bg-primary/5 border border-slate-200 dark:border-primary/20 rounded-lg text-sm">2</button>
+<button class="px-3 py-1 bg-white dark:bg-primary/5 border border-slate-200 dark:border-primary/20 rounded-lg text-sm">3</button>
+<button class="px-3 py-1 bg-white dark:bg-primary/5 border border-slate-200 dark:border-primary/20 rounded-lg text-sm">Next</button>
+</div>
+</footer>
+</div>
+</div>
+</main>
+</div>
+</body></html>

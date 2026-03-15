@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#ff4400",
+                        "background-light": "#f8f6f5",
+                        "background-dark": "#23140f",
+                    },
+                    fontFamily: {
+                        "display": ["Space Grotesk"]
+                    },
+                    borderRadius: {"DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem"},
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Space Grotesk', sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #3a2c27; border-radius: 10px; }
+    </style>
+</head>
+<body class="bg-background-light dark:bg-background-dark text-slate-900 dark:text-slate-100 antialiased overflow-hidden">
+<div class="flex h-screen w-full">
+<!-- Sidebar -->
+<aside class="w-[280px] flex-shrink-0 border-r border-primary/10 bg-background-light dark:bg-background-dark flex flex-col">
+<div class="p-6 flex items-center gap-3">
+<div class="size-8 bg-primary rounded flex items-center justify-center text-white">
+<span class="material-symbols-outlined text-xl">smart_toy</span>
+</div>
+<h1 class="font-bold text-lg tracking-tight">Sales Copilot</h1>
+</div>
+<div class="px-4 mb-4">
+<button class="w-full flex items-center justify-center gap-2 bg-primary text-white py-2.5 rounded font-medium hover:bg-primary/90 transition-colors">
+<span class="material-symbols-outlined text-sm">add</span>
+                    New Chat
+                </button>
+</div>
+<div class="flex-1 overflow-y-auto custom-scrollbar px-2 space-y-1">
+<div class="text-[10px] uppercase tracking-wider text-slate-500 font-bold px-3 py-2">Recent History</div>
+<div class="group flex items-center gap-3 px-3 py-3 rounded bg-primary/10 border-l-2 border-primary cursor-pointer">
+<span class="material-symbols-outlined text-primary text-xl">chat_bubble</span>
+<div class="flex-1 overflow-hidden">
+<p class="text-sm font-medium truncate">Current Lead Strategy</p>
+<p class="text-[11px] text-slate-500">2 mins ago</p>
+</div>
+</div>
+<div class="group flex items-center gap-3 px-3 py-3 rounded hover:bg-primary/5 cursor-pointer transition-colors">
+<span class="material-symbols-outlined text-slate-400 text-xl">bar_chart</span>
+<div class="flex-1 overflow-hidden">
+<p class="text-sm font-medium truncate">Q3 Revenue Forecast</p>
+<p class="text-[11px] text-slate-500">1 hour ago</p>
+</div>
+</div>
+<div class="group flex items-center gap-3 px-3 py-3 rounded hover:bg-primary/5 cursor-pointer transition-colors">
+<span class="material-symbols-outlined text-slate-400 text-xl">edit_note</span>
+<div class="flex-1 overflow-hidden">
+<p class="text-sm font-medium truncate">Follow-up Drafts</p>
+<p class="text-[11px] text-slate-500">Yesterday</p>
+</div>
+</div>
+<div class="group flex items-center gap-3 px-3 py-3 rounded hover:bg-primary/5 cursor-pointer transition-colors">
+<span class="material-symbols-outlined text-slate-400 text-xl">filter_list</span>
+<div class="flex-1 overflow-hidden">
+<p class="text-sm font-medium truncate">Sales Pipeline Analysis</p>
+<p class="text-[11px] text-slate-500">Oct 12</p>
+</div>
+</div>
+</div>
+<div class="p-4 border-t border-primary/10 flex items-center gap-3">
+<div class="size-9 rounded-full bg-primary/20 flex items-center justify-center border border-primary/20">
+<span class="material-symbols-outlined text-primary text-lg">person</span>
+</div>
+<div class="flex-1 overflow-hidden">
+<p class="text-xs font-bold truncate">Alex Rivera</p>
+<p class="text-[10px] text-slate-500 uppercase tracking-tighter">Pro Plan</p>
+</div>
+<span class="material-symbols-outlined text-slate-500 text-lg cursor-pointer">settings</span>
+</div>
+</aside>
+<!-- Main Content -->
+<main class="flex-1 flex flex-col bg-background-light dark:bg-[#141416]">
+<!-- Top Nav -->
+<header class="h-16 flex items-center justify-between px-8 border-b border-primary/10 bg-background-light/50 dark:bg-[#141416]/50 backdrop-blur-md z-10">
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-primary">auto_awesome</span>
+<h2 class="font-bold text-base">AI Sales Assistant</h2>
+</div>
+<div class="flex items-center gap-3">
+<button class="flex items-center gap-2 px-3 py-1.5 rounded border border-primary/20 text-xs font-bold hover:bg-primary/5 transition-all">
+<span class="material-symbols-outlined text-sm">delete</span>
+                        Clear
+                    </button>
+<button class="flex items-center gap-2 px-3 py-1.5 rounded bg-primary text-white text-xs font-bold hover:shadow-lg hover:shadow-primary/20 transition-all">
+<span class="material-symbols-outlined text-sm">share</span>
+                        Share
+                    </button>
+</div>
+</header>
+<!-- Chat Area -->
+<div class="flex-1 overflow-y-auto custom-scrollbar p-8 space-y-8 max-w-5xl mx-auto w-full">
+<!-- User Message -->
+<div class="flex flex-col items-end gap-2">
+<div class="bg-primary/15 text-slate-900 dark:text-slate-100 px-5 py-3 rounded-xl rounded-tr-none max-w-[80%] border border-primary/10">
+<p class="text-sm leading-relaxed">Can you help me log the recent call with John Doe? We talked about the Enterprise plan and he seemed very interested in the custom API integration.</p>
+</div>
+<span class="text-[10px] text-slate-500 font-medium px-1 uppercase tracking-widest">You · 10:24 AM</span>
+</div>
+<!-- AI Message -->
+<div class="flex flex-col items-start gap-2">
+<div class="flex items-start gap-4 max-w-[90%]">
+<div class="size-8 rounded bg-primary/10 flex items-center justify-center shrink-0 mt-1 border border-primary/20">
+<span class="material-symbols-outlined text-primary text-base">smart_toy</span>
+</div>
+<div class="space-y-4">
+<div class="bg-slate-200 dark:bg-[#232326] text-slate-900 dark:text-slate-100 px-5 py-3 rounded-xl rounded-tl-none border border-slate-300 dark:border-slate-800">
+<p class="text-sm leading-relaxed">Absolutely! I've analyzed your conversation summary. I can log this activity directly to your CRM with the relevant tags. Please review the details below:</p>
+</div>
+<!-- Special Workflow Card -->
+<div class="bg-background-light dark:bg-[#1c1c1f] rounded-xl border border-primary/20 overflow-hidden shadow-2xl">
+<div class="p-4 border-b border-primary/10 flex items-center justify-between bg-primary/5">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-sm">account_tree</span>
+<span class="text-xs font-bold uppercase tracking-wider text-primary">Workflow Execution</span>
+</div>
+<span class="text-[10px] text-slate-500">Ready to log</span>
+</div>
+<div class="p-5 flex flex-col md:flex-row gap-5">
+<div class="relative h-32 w-full md:w-48 bg-slate-800 rounded overflow-hidden flex-shrink-0 border border-slate-700">
+<div class="absolute inset-0 bg-gradient-to-br from-primary/40 to-transparent mix-blend-overlay"></div>
+<img class="w-full h-full object-cover opacity-50" data-alt="Abstract orange and dark gradient pattern" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDG7mrLn-jBLttuTJUvIf4cKU26iH3RVhpT38nceDGWZP2rQa_Z9aENduSWE1HEMoOVsk4yB7Lw_p4cSXXcBPIWmNJ1M4eJdmPRKGnqpjXwrAs2KrZazOCeYT76dF9ZwhoXzc32HpkSZ6PHYolgxnbSNnKCcmNgs2lxCuxYS_BYdoBsiQj_7tB_h2Py4NN5uN1XDSTVc-V10_FmcgPpezrppTmzpCjZbmrvNLiKqL00VsSh_PtDgROL7nbaDF_07lcH6_hbBm4wE4g"/>
+<div class="absolute inset-0 flex items-center justify-center">
+<span class="material-symbols-outlined text-primary/60 text-4xl">history_edu</span>
+</div>
+</div>
+<div class="flex-1 flex flex-col justify-between py-1">
+<div>
+<h3 class="text-lg font-bold mb-1">Log Activity</h3>
+<p class="text-sm text-slate-400 mb-4">Call with John Doe - Enterprise Discussion</p>
+<div class="grid grid-cols-2 gap-3 mb-4">
+<div class="bg-slate-200 dark:bg-[#2a2a2d] p-2 rounded border border-slate-300 dark:border-slate-700">
+<p class="text-[10px] text-slate-500 uppercase font-bold">Duration</p>
+<p class="text-xs font-medium">15:42 mins</p>
+</div>
+<div class="bg-slate-200 dark:bg-[#2a2a2d] p-2 rounded border border-slate-300 dark:border-slate-700">
+<p class="text-[10px] text-slate-500 uppercase font-bold">Sentiment</p>
+<p class="text-xs font-medium text-green-500">Positive</p>
+</div>
+</div>
+</div>
+<div class="flex items-center justify-between">
+<div class="flex -space-x-2">
+<div class="size-6 rounded-full border-2 border-[#1c1c1f] bg-slate-700 flex items-center justify-center">
+<span class="material-symbols-outlined text-[10px]">person</span>
+</div>
+<div class="size-6 rounded-full border-2 border-[#1c1c1f] bg-primary flex items-center justify-center">
+<span class="material-symbols-outlined text-[10px]">hub</span>
+</div>
+</div>
+<button class="bg-primary hover:bg-primary/90 text-white px-6 py-2 rounded text-xs font-bold transition-all transform active:scale-95 shadow-lg shadow-primary/20">
+                                                Execute
+                                            </button>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<span class="text-[10px] text-slate-500 font-medium px-12 uppercase tracking-widest">AI · 10:25 AM</span>
+</div>
+<!-- Typing Indicator -->
+<div class="flex items-center gap-4 max-w-[90%]">
+<div class="size-8 rounded bg-primary/10 flex items-center justify-center shrink-0 border border-primary/20">
+<span class="material-symbols-outlined text-primary text-base">smart_toy</span>
+</div>
+<div class="flex items-center gap-1 bg-slate-200 dark:bg-[#232326] px-4 py-3 rounded-full border border-slate-300 dark:border-slate-800">
+<div class="w-1.5 h-1.5 bg-primary/60 rounded-full animate-bounce" style="animation-delay: 0ms"></div>
+<div class="w-1.5 h-1.5 bg-primary/60 rounded-full animate-bounce" style="animation-delay: 200ms"></div>
+<div class="w-1.5 h-1.5 bg-primary/60 rounded-full animate-bounce" style="animation-delay: 400ms"></div>
+</div>
+</div>
+</div>
+<!-- Input Bar -->
+<footer class="p-6 border-t border-[#2a2a2d] bg-[#141416]">
+<div class="max-w-4xl mx-auto flex items-end gap-3 bg-[#1c1c1f] p-3 rounded-xl border border-slate-800 focus-within:border-primary/50 transition-all shadow-xl">
+<button class="size-10 flex items-center justify-center text-slate-500 hover:text-primary transition-colors">
+<span class="material-symbols-outlined">attach_file</span>
+</button>
+<textarea class="flex-1 bg-transparent border-none focus:ring-0 text-sm resize-none py-2 custom-scrollbar max-h-32 text-slate-100 placeholder-slate-600" placeholder="Type your message here..." rows="1"></textarea>
+<div class="flex items-center gap-2">
+<button class="size-10 flex items-center justify-center text-slate-500 hover:text-primary transition-colors">
+<span class="material-symbols-outlined">mic</span>
+</button>
+<button class="size-10 rounded bg-primary flex items-center justify-center text-white hover:bg-primary/90 transition-all shadow-lg shadow-primary/20">
+<span class="material-symbols-outlined">arrow_forward</span>
+</button>
+</div>
+</div>
+<p class="text-center text-[10px] text-slate-600 mt-3 font-medium uppercase tracking-widest">AI can make mistakes. Verify important information.</p>
+</footer>
+</main>
+</div>
+</body></html>

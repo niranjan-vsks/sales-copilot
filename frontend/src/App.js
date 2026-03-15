@@ -1,40 +1,75 @@
 import React from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
-import LoginPage from "@/pages/LoginPage";
-import SetupPage from "@/pages/SetupPage";
-import AuthCallback from "@/pages/AuthCallback";
+import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 
-// REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+import LoginPage         from "@/pages/LoginPage";
+import DashboardPage     from "@/pages/DashboardPage";
+import ChatPage          from "@/pages/ChatPage";
+import ActivitiesPage    from "@/pages/ActivitiesPage";
+import ConnectionsPage   from "@/pages/admin/ConnectionsPage";
+import TeamPage          from "@/pages/admin/TeamPage";
+import MonitoringPage    from "@/pages/admin/MonitoringPage";
+
+import AuthGuard         from "@/components/AuthGuard";
+import TopNavLayout      from "@/layouts/TopNavLayout";
+import SidebarLayout     from "@/layouts/SidebarLayout";
 
 function AppRouter() {
-  const location = useLocation();
-  
-  // Check URL fragment (not query params) for session_id - MUST be synchronous
-  // This runs BEFORE ProtectedRoute to prevent race conditions
-  if (location.hash?.includes('session_id=')) {
-    return <AuthCallback />;
-  }
-  
   return (
     <Routes>
+      {/* Public */}
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/" element={<SetupPage />} />
-      <Route path="*" element={<Navigate to="/" replace />} />
+
+      {/* Dashboard + Chat — TopNavLayout */}
+      <Route
+        element={
+          <AuthGuard>
+            <TopNavLayout />
+          </AuthGuard>
+        }
+      >
+        <Route path="/dashboard" element={<DashboardPage />} />
+        <Route path="/chat"      element={<ChatPage />} />
+      </Route>
+
+      {/* Activities + Admin — SidebarLayout */}
+      <Route
+        element={
+          <AuthGuard>
+            <SidebarLayout />
+          </AuthGuard>
+        }
+      >
+        <Route path="/activities" element={<ActivitiesPage />} />
+      </Route>
+
+      <Route
+        element={
+          <AuthGuard requireAdmin>
+            <SidebarLayout />
+          </AuthGuard>
+        }
+      >
+        <Route path="/admin/connections" element={<ConnectionsPage />} />
+        <Route path="/admin/team"        element={<TeamPage />} />
+        <Route path="/admin/monitoring"  element={<MonitoringPage />} />
+      </Route>
+
+      {/* Default redirects */}
+      <Route path="/" element={<Navigate to="/dashboard" replace />} />
+      <Route path="*" element={<Navigate to="/login"     replace />} />
     </Routes>
   );
 }
 
-function App() {
+export default function App() {
   return (
     <div className="App dark">
       <Toaster data-testid="global-toaster" richColors position="top-center" />
-      <BrowserRouter>
+      <HashRouter>
         <AppRouter />
-      </BrowserRouter>
+      </HashRouter>
     </div>
   );
 }
-
-export default App;
