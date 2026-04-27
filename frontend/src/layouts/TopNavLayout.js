@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { BarChart2, LayoutDashboard, MessageSquare, Bell, ChevronDown, LogOut, Users, Settings, Monitor } from 'lucide-react';
+import { BarChart2, LayoutDashboard, MessageSquare, Bell, ChevronDown, LogOut, Users, Settings, Monitor, FolderOpen } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -115,6 +115,13 @@ export default function TopNavLayout() {
                     className="cursor-pointer hover:bg-[#1f2022] focus:bg-[#1f2022]"
                   >
                     <Monitor className="w-4 h-4 mr-2" /> Monitoring
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    data-testid="nav-file-management"
+                    onClick={() => navigate('/admin/file-management')}
+                    className="cursor-pointer hover:bg-[#1f2022] focus:bg-[#1f2022]"
+                  >
+                    <FolderOpen className="w-4 h-4 mr-2" /> File Management
                   </DropdownMenuItem>
                   <DropdownMenuSeparator className="bg-[#1f2022]" />
                 </>

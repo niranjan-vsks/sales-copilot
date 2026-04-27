@@ -10,6 +10,7 @@ import ActivitiesPage    from "@/pages/ActivitiesPage";
 import ConnectionsPage   from "@/pages/admin/ConnectionsPage";
 import TeamPage          from "@/pages/admin/TeamPage";
 import MonitoringPage    from "@/pages/admin/MonitoringPage";
+import FileManagementPage from "@/pages/admin/FileManagementPage";
 
 import AuthGuard         from "@/components/AuthGuard";
 import TopNavLayout      from "@/layouts/TopNavLayout";
@@ -31,6 +32,7 @@ function AppRouter() {
       >
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/chat"      element={<ChatPage />} />
+        <Route path="/excel"     element={<Navigate to="/admin/file-management" replace />} />
       </Route>
 
       {/* Activities + Admin — SidebarLayout */}
@@ -51,9 +53,10 @@ function AppRouter() {
           </AuthGuard>
         }
       >
-        <Route path="/admin/connections" element={<ConnectionsPage />} />
-        <Route path="/admin/team"        element={<TeamPage />} />
-        <Route path="/admin/monitoring"  element={<MonitoringPage />} />
+        <Route path="/admin/connections"      element={<ConnectionsPage />} />
+        <Route path="/admin/team"             element={<TeamPage />} />
+        <Route path="/admin/monitoring"       element={<MonitoringPage />} />
+        <Route path="/admin/file-management"  element={<FileManagementPage />} />
       </Route>
 
       {/* Default redirects */}

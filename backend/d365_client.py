@@ -115,6 +115,39 @@ class D365Client:
             )
         self._raise_for_status(r)
 
+    @staticmethod
+    async def create_activity_via_webhook(webhook_url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """POST activity data to a Power Automate HTTP trigger webhook.
+
+        The Power Automate flow (running inside the Lenovo tenant) receives this
+        payload and creates the D365 record — bypassing OAuth consent.
+
+        Expected response: {"activityid": "<guid>"} or 202 Accepted (no body).
+        """
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                webhook_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=30.0,
+            )
+        if r.status_code not in (200, 201, 202):
+            raise ValueError(f"Webhook returned {r.status_code}: {r.text[:400]}")
+        try:
+            data = r.json()
+            record_id = data.get("activityid") or data.get("activityId") or data.get("id") or ""
+            return {
+                "activityid": record_id,
+                "_http_status": r.status_code,
+                "_raw_response": data,          # full PA response for debug
+            }
+        except Exception:
+            return {
+                "activityid": "",
+                "_http_status": r.status_code,
+                "_raw_response": r.text[:400],  # non-JSON body (e.g. HTML error page)
+            }
+
     # ── internal ──────────────────────────────────────────────────────────
 
     def _raise_for_status(self, r: httpx.Response) -> None:

@@ -8,6 +8,7 @@ import {
   Settings,
   Users,
   Monitor,
+  FolderOpen,
   LogOut,
 } from 'lucide-react';
 import api from '@/lib/api';
@@ -19,9 +20,10 @@ const NAV_ITEMS = [
 ];
 
 const ADMIN_ITEMS = [
-  { to: '/admin/connections',  label: 'Connections', icon: Settings },
-  { to: '/admin/team',         label: 'Team',        icon: Users },
-  { to: '/admin/monitoring',   label: 'Monitoring',  icon: Monitor },
+  { to: '/admin/connections',    label: 'Connections', icon: Settings },
+  { to: '/admin/team',           label: 'Team',        icon: Users },
+  { to: '/admin/monitoring',     label: 'Monitoring',  icon: Monitor },
+  { to: '/admin/file-management', label: 'Files',      icon: FolderOpen },
 ];
 
 export default function SidebarLayout() {

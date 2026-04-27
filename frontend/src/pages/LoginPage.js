@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { BarChart2, Mail, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 
 const MS_ICON = (
   <svg width="20" height="20" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -31,8 +32,44 @@ const FEATURES = [
 ];
 
 export default function LoginPage() {
+  const [devEnabled, setDevEnabled] = useState(false);
+  const [devUser, setDevUser] = useState('');
+  const [devPass, setDevPass] = useState('');
+  const [devLoading, setDevLoading] = useState(false);
+  const [devError, setDevError] = useState('');
+
+  useEffect(() => {
+    fetch('/api/auth/dev-login/check')
+      .then(r => r.json())
+      .then(d => setDevEnabled(d?.data?.enabled === true))
+      .catch(() => {});
+  }, []);
+
   const handleLogin = () => {
     window.location.href = '/api/auth/microsoft';
+  };
+
+  const handleDevLogin = async () => {
+    setDevLoading(true);
+    setDevError('');
+    try {
+      const res = await fetch('/api/auth/dev-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ username: devUser, password: devPass }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setDevError(err.detail || 'Invalid credentials');
+        return;
+      }
+      window.location.href = '/#/dashboard';
+    } catch {
+      setDevError('Connection error. Is the backend running?');
+    } finally {
+      setDevLoading(false);
+    }
   };
 
   return (
@@ -133,6 +170,38 @@ export default function LoginPage() {
           <p className="text-[#9CA3AF] text-xs">
             Access requires a Cisco Microsoft 365 account. Contact your admin to be added to the team.
           </p>
+
+          {/* Dev / Demo login — only renders when DEV_LOGIN_ENABLED=true */}
+          {devEnabled && (
+            <>
+              <div style={{ borderTop: '1px solid #1f2022', margin: '24px 0' }} />
+              <p className="text-[#9CA3AF] text-xs mb-3">Demo Access</p>
+              <Input
+                placeholder="Username"
+                value={devUser}
+                onChange={e => setDevUser(e.target.value)}
+                className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] rounded-none"
+              />
+              <Input
+                type="password"
+                placeholder="Password"
+                value={devPass}
+                onChange={e => setDevPass(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleDevLogin()}
+                className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] rounded-none mt-2"
+              />
+              {devError && (
+                <p className="text-[#ef4444] text-xs mt-2">{devError}</p>
+              )}
+              <Button
+                onClick={handleDevLogin}
+                disabled={devLoading || !devUser || !devPass}
+                className="w-full h-10 mt-3 bg-[#1f2022] hover:bg-[#2a2c2e] text-[#F2F3F5] font-medium transition-colors rounded-none"
+              >
+                {devLoading ? 'Signing in...' : 'Continue'}
+              </Button>
+            </>
+          )}
         </motion.div>
 
         {/* Mobile headline — only below lg */}

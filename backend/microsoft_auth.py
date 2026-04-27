@@ -20,14 +20,25 @@ from cryptography.fernet import Fernet
 
 logger = logging.getLogger(__name__)
 
-SCOPES = [
+# offline_access / openid / profile are RESERVED by MSAL — never pass them manually.
+# MSAL adds offline_access automatically to get refresh tokens.
+#
+# IMPORTANT: Microsoft blocks mixing scopes from different resources (Graph vs D365)
+# in a single auth request. We use Graph scopes for login; D365 token is acquired
+# separately via get_d365_token() using the cached account + MSAL token cache.
+LOGIN_SCOPES = [
     "User.Read",
     "Mail.ReadWrite",
     "Mail.Send",
     "Calendars.ReadWrite",
-    "offline_access",
+]
+
+D365_SCOPES = [
     "https://dynamics.microsoft.com/user_impersonation",
 ]
+
+# Alias kept for any code that imports SCOPES directly
+SCOPES = LOGIN_SCOPES
 
 
 def _fernet() -> Fernet:
@@ -43,10 +54,13 @@ def _msal_app() -> msal.ConfidentialClientApplication:
     tenant_id = os.environ.get("AZURE_TENANT_ID", "")
     if not all([client_id, client_secret, tenant_id]):
         raise ValueError("AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_TENANT_ID not set")
+    # 'common' allows both personal Microsoft accounts (dev/testing) and any Azure AD
+    # org account (Lenovo, Cisco, etc.) — required for multi-tenant support.
+    # Do NOT lock to tenant_id: that restricts logins to one tenant only.
     return msal.ConfidentialClientApplication(
         client_id=client_id,
         client_credential=client_secret,
-        authority=f"https://login.microsoftonline.com/{tenant_id}",
+        authority="https://login.microsoftonline.com/common",
     )
 
 
@@ -61,7 +75,7 @@ async def get_auth_url() -> Tuple[str, str]:
 
     redirect_uri = os.environ.get("AZURE_REDIRECT_URI", "")
     auth_url = _msal_app().get_authorization_request_url(
-        scopes=SCOPES,
+        scopes=LOGIN_SCOPES,
         state=state,
         redirect_uri=redirect_uri,
     )
@@ -77,7 +91,7 @@ async def handle_callback(code: str, db) -> dict:
     redirect_uri = os.environ.get("AZURE_REDIRECT_URI", "")
     result = _msal_app().acquire_token_by_authorization_code(
         code=code,
-        scopes=SCOPES,
+        scopes=LOGIN_SCOPES,
         redirect_uri=redirect_uri,
     )
 
@@ -110,7 +124,7 @@ async def handle_callback(code: str, db) -> dict:
                 "ms_user_id": ms_user_id,
                 "email": email,
                 "encrypted_token": encrypted,
-                "scopes": SCOPES,
+                "scopes": LOGIN_SCOPES,
                 "updated_at": datetime.now(timezone.utc),
             }
         },
@@ -154,7 +168,7 @@ async def get_access_token(user_id: str, db) -> str:
 
     refreshed = _msal_app().acquire_token_by_refresh_token(
         refresh_token=refresh_token,
-        scopes=SCOPES,
+        scopes=LOGIN_SCOPES,
     )
 
     if "error" in refreshed:
@@ -181,3 +195,52 @@ async def get_access_token(user_id: str, db) -> str:
 
     logger.info("MS token silently refreshed for user %s", user_id)
     return refreshed["access_token"]
+
+
+async def get_d365_token(user_id: str, db) -> str:
+    """
+    Return a valid D365 Dataverse access token.
+    Uses the stored refresh token to acquire a D365-scoped token via MSAL.
+
+    Requires that 'Dynamics CRM > user_impersonation' delegated permission is
+    added and admin-consented in the Azure App Registration.
+    Raises ValueError with a clear message if consent is missing.
+    """
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "email": 1})
+    if not user_doc:
+        raise ValueError(f"User {user_id} not found")
+
+    token_doc = await db.ms_tokens.find_one(
+        {"email": user_doc["email"]}, {"_id": 0}
+    )
+    if not token_doc:
+        raise ValueError(
+            f"No MS token for user {user_id} — user must re-authenticate"
+        )
+
+    fernet = _fernet()
+    token_data = json.loads(fernet.decrypt(token_doc["encrypted_token"].encode()))
+
+    refresh_token = token_data.get("refresh_token")
+    if not refresh_token:
+        raise ValueError(
+            f"No refresh token for user {user_id} — user must re-authenticate"
+        )
+
+    result = _msal_app().acquire_token_by_refresh_token(
+        refresh_token=refresh_token,
+        scopes=D365_SCOPES,
+    )
+
+    if "error" in result:
+        detail = result.get("error_description") or result.get("error", "unknown")
+        if "AADSTS500011" in detail or "resource" in detail.lower():
+            raise ValueError(
+                "D365 permission not configured. In Azure portal → App Registration → "
+                "API permissions → Add 'Dynamics CRM > user_impersonation' (Delegated) "
+                "and grant admin consent."
+            )
+        raise ValueError(f"D365 token acquisition failed: {detail}")
+
+    logger.info("D365 token acquired for user %s", user_id)
+    return result["access_token"]

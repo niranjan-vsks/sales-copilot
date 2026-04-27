@@ -39,6 +39,7 @@ export default function ActivitiesPage() {
   const [search, setSearch] = useState('');
   const [entitySet, setEntitySet] = useState('phonecalls');
   const [executions, setExecutions] = useState([]);
+  const [d365OrgUrl, setD365OrgUrl] = useState('');
 
   const loadActivities = useCallback(() => {
     setLoading(true);
@@ -52,6 +53,9 @@ export default function ActivitiesPage() {
     loadActivities();
     api.get('/workflows/executions?limit=100&workflow_id=log-d365-activity')
       .then((d) => setExecutions(d.items || []))
+      .catch(() => {});
+    api.get('/config')
+      .then((cfg) => setD365OrgUrl(cfg.d365_org_url || ''))
       .catch(() => {});
   }, [loadActivities]);
 
@@ -159,8 +163,8 @@ export default function ActivitiesPage() {
             <tbody>
               {filtered.map((a, i) => {
                 const recId = a.activityid || a.activityId;
-                const d365Url = recId
-                  ? `${process.env.REACT_APP_D365_ORG_URL || ''}/main.aspx?etn=${entitySet.slice(0,-1)}&id=${recId}&pagetype=entityrecord`
+                const d365Url = recId && d365OrgUrl
+                  ? `${d365OrgUrl}/main.aspx?etn=${entitySet.slice(0,-1)}&id=${recId}&pagetype=entityrecord`
                   : null;
                 return (
                   <tr key={recId || i} className="border-b border-[#1f2022] last:border-0 hover:bg-[#1f2022]/40 transition-colors">
