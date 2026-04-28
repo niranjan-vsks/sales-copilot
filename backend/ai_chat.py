@@ -88,14 +88,13 @@ WHAT YOU CAN DO:
 
 TRIGGERABLE WORKFLOWS:
 - phonecall  : requires subject, account, duration_minutes (default 30)
-- task       : requires subject, account (start_time optional)
-- appointment: requires subject, account, duration_minutes (default 30)
+- appointment: requires subject, account, duration_minutes (default 30) — also used for tasks and follow-ups
 
 RULES:
 - Resolve relative dates ("yesterday", "last Monday") to ISO 8601 using today's date above
 - "call" or "phone call" → workflow_type = "phonecall"
 - "meeting" or "appointment" → workflow_type = "appointment"
-- "task" or "follow-up" → workflow_type = "task"
+- "task" or "follow-up" → workflow_type = "appointment"
 - duration_minutes must be an integer (15, 30, 45, 60, 90, 120 are common)
 - If any required param is missing → action = "answer", clarification_needed = true, ask specifically
 - For app-state questions → answer using the LIVE APPLICATION STATE above
