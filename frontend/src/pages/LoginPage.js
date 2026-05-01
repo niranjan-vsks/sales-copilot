@@ -1,157 +1,219 @@
-import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
+import { BarChart2, Mail, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card';
-import { Loader2, Lock } from 'lucide-react';
-import OpenClaw from '@/components/ui/icons/OpenClaw';
+import { Input } from '@/components/ui/input';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || '';
-const API = `${BACKEND_URL}/api`;
+const MS_ICON = (
+  <svg width="20" height="20" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <path d="M1 1H10V10H1V1Z" fill="#F25022" />
+    <path d="M11 1H20V10H11V1Z" fill="#7FBA00" />
+    <path d="M1 11H10V20H1V11Z" fill="#00A4EF" />
+    <path d="M11 11H20V20H11V11Z" fill="#FFB900" />
+  </svg>
+);
+
+const FEATURES = [
+  {
+    icon: BarChart2,
+    title: 'Activity logging',
+    desc: 'Automated D365 logging for every interaction.',
+  },
+  {
+    icon: Mail,
+    title: 'Email automation',
+    desc: 'Smart email chains that nurture leads effectively.',
+  },
+  {
+    icon: MessageSquare,
+    title: 'AI chat routing',
+    desc: 'Intelligent lead discovery via conversational AI.',
+  },
+];
 
 export default function LoginPage() {
-  const navigate = useNavigate();
-  const [checking, setChecking] = useState(true);
-  const [instanceLock, setInstanceLock] = useState(null);
+  const [devEnabled, setDevEnabled] = useState(false);
+  const [devUser, setDevUser] = useState('');
+  const [devPass, setDevPass] = useState('');
+  const [devLoading, setDevLoading] = useState(false);
+  const [devError, setDevError] = useState('');
 
-  // Check if already authenticated and instance lock status
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        // Check instance lock status first
-        const instanceRes = await fetch(`${API}/auth/instance`);
-        if (instanceRes.ok) {
-          const instanceData = await instanceRes.json();
-          setInstanceLock(instanceData);
-        }
-
-        const response = await fetch(`${API}/auth/me`, {
-          credentials: 'include'
-        });
-        if (response.ok) {
-          // Already authenticated, go to setup
-          navigate('/', { replace: true });
-          return;
-        }
-      } catch (e) {
-        // Not authenticated
-      }
-      setChecking(false);
-    };
-    checkAuth();
-  }, [navigate]);
+    fetch('/api/auth/dev-login/check')
+      .then(r => r.json())
+      .then(d => setDevEnabled(d?.data?.enabled === true))
+      .catch(() => {});
+  }, []);
 
   const handleLogin = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    const redirectUrl = window.location.origin + '/';
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+    window.location.href = '/api/auth/microsoft';
   };
 
-  if (checking) {
-    return (
-      <div className="min-h-screen bg-[#0f0f10] flex items-center justify-center">
-        <div className="text-zinc-400 flex items-center gap-2">
-          <Loader2 className="w-5 h-5 animate-spin" />
-          Checking authentication...
-        </div>
-      </div>
-    );
-  }
+  const handleDevLogin = async () => {
+    setDevLoading(true);
+    setDevError('');
+    try {
+      const res = await fetch('/api/auth/dev-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ username: devUser, password: devPass }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setDevError(err.detail || 'Invalid credentials');
+        return;
+      }
+      window.location.href = '/#/dashboard';
+    } catch {
+      setDevError('Connection error. Is the backend running?');
+    } finally {
+      setDevLoading(false);
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-[#0f0f10] text-zinc-100 flex items-center justify-center p-4">
-      {/* Subtle texture overlay */}
-      <div className="texture-noise" aria-hidden="true" />
-
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3 }}
-        className="w-full max-w-md"
-      >
-        <Card className="border-[#1f2022] bg-[#141416]/95 backdrop-blur-sm">
-          <CardHeader className="text-center space-y-4">
-            <div className="flex items-center justify-center gap-3">
-              <OpenClaw size={48} />
-            </div>
-            <CardTitle className="heading text-2xl font-semibold">
-              OpenClaw Setup
-            </CardTitle>
-            <CardDescription className="text-zinc-400">
-              {instanceLock?.locked 
-                ? 'This is a private instance. Only the owner can sign in.'
-                : 'Sign in with Google to configure and access your personal OpenClaw instance.'
-              }
-            </CardDescription>
-          </CardHeader>
-          
-          <CardContent className="space-y-6">
-            {instanceLock?.locked ? (
-              <div className="space-y-4">
-                <div className="rounded-lg border border-red-900/60 bg-red-950/40 text-red-300 px-4 py-4 text-sm">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Lock className="w-4 h-4" />
-                    <span className="font-medium">Private Instance</span>
-                  </div>
-                  <p className="text-red-400/80">
-                    This OpenClaw instance is private and access is restricted.
-                  </p>
-                </div>
-                <button
-                  onClick={handleLogin}
-                  className="text-xs text-zinc-600 hover:text-zinc-400 underline underline-offset-2"
-                >
-                  Instance owner? Sign in here
-                </button>
-              </div>
-            ) : (
-              <>
-                <Button
-                  onClick={handleLogin}
-                  data-testid="google-login-button"
-                  className="w-full bg-white hover:bg-gray-100 text-gray-800 font-medium h-12 flex items-center justify-center gap-3"
-                >
-                  <svg className="w-5 h-5" viewBox="0 0 24 24">
-                    <path
-                      fill="currentColor"
-                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                    />
-                    <path
-                      fill="currentColor"
-                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                    />
-                    <path
-                      fill="currentColor"
-                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
-                    />
-                    <path
-                      fill="currentColor"
-                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-                    />
-                  </svg>
-                  Sign in with Google
-                </Button>
-                
-                <p className="text-xs text-zinc-500 text-center">
-                  Your OpenClaw instance will be private and only accessible by you.
-                </p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-        
-        <p className="text-xs text-zinc-600 text-center mt-6">
-          Powered by{' '}
-          <a
-            href="https://github.com/openclaw/openclaw"
-            target="_blank"
-            rel="noreferrer"
-            className="text-zinc-500 hover:text-zinc-400 underline underline-offset-2"
+    <div className="min-h-screen flex bg-[#0f0f10] text-[#F2F3F5]">
+      {/* ── Left panel (60%) ── */}
+      <div className="hidden lg:flex lg:w-[60%] flex-col justify-center px-12 xl:px-24 border-r border-[#1f2022]">
+        <div className="max-w-2xl">
+          <motion.h1
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="font-['Space_Grotesk'] text-5xl xl:text-6xl font-bold leading-tight mb-6"
           >
-            OpenClaw
-          </a>
-        </p>
-      </motion.div>
+            Your sales workflows,{' '}
+            <br />
+            <span className="text-[#FF4500]">on autopilot.</span>
+          </motion.h1>
+
+          <motion.p
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.1 }}
+            className="text-[#9CA3AF] text-lg xl:text-xl leading-relaxed mb-12"
+          >
+            Connect Microsoft 365 and let AI handle your D365 logging,
+            email chains, and lead discovery.
+          </motion.p>
+
+          <motion.div
+            initial="hidden"
+            animate="visible"
+            variants={{
+              hidden: {},
+              visible: { transition: { staggerChildren: 0.08 } },
+            }}
+            className="space-y-8"
+          >
+            {FEATURES.map(({ icon: Icon, title, desc }) => (
+              <motion.div
+                key={title}
+                variants={{ hidden: { opacity: 0, y: 12 }, visible: { opacity: 1, y: 0 } }}
+                className="flex items-start gap-5"
+              >
+                <div className="flex items-center justify-center w-12 h-12 shrink-0 bg-[#FF4500]/10 border border-[#FF4500]/20 text-[#FF4500]">
+                  <Icon className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-['Space_Grotesk'] text-[#F2F3F5] text-lg font-bold mb-1">
+                    {title}
+                  </h3>
+                  <p className="text-[#9CA3AF] text-sm">{desc}</p>
+                </div>
+              </motion.div>
+            ))}
+          </motion.div>
+        </div>
+      </div>
+
+      {/* ── Right panel (40%) ── */}
+      <div className="w-full lg:w-[40%] flex flex-col items-center justify-center px-6 sm:px-12">
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, delay: 0.15 }}
+          className="w-full max-w-md p-10 bg-[#141416] border border-[#1f2022] shadow-2xl"
+        >
+          {/* Logo + app name */}
+          <div className="flex items-center gap-3 mb-10">
+            <div className="w-10 h-10 bg-[#FF4500] flex items-center justify-center shrink-0">
+              <BarChart2 className="w-5 h-5 text-white" />
+            </div>
+            <span className="font-['Space_Grotesk'] text-[#F2F3F5] text-2xl font-bold tracking-tight">
+              Sales Copilot
+            </span>
+          </div>
+
+          {/* Heading */}
+          <div className="mb-8">
+            <h3 className="font-['Space_Grotesk'] text-[#F2F3F5] text-xl font-bold mb-2">
+              Sign in to continue
+            </h3>
+            <p className="text-[#9CA3AF] text-sm">
+              Welcome back — authenticate with your corporate Microsoft account.
+            </p>
+          </div>
+
+          {/* Microsoft sign-in button */}
+          <Button
+            onClick={handleLogin}
+            data-testid="microsoft-signin-button"
+            className="w-full h-12 flex items-center justify-center gap-3 bg-[#0078D4] hover:bg-[#0067b8] text-white font-medium transition-colors mb-6 rounded-none"
+          >
+            {MS_ICON}
+            Sign in with Microsoft
+          </Button>
+
+          {/* Footer note */}
+          <p className="text-[#9CA3AF] text-xs">
+            Access requires a Cisco Microsoft 365 account. Contact your admin to be added to the team.
+          </p>
+
+          {/* Dev / Demo login — only renders when DEV_LOGIN_ENABLED=true */}
+          {devEnabled && (
+            <>
+              <div style={{ borderTop: '1px solid #1f2022', margin: '24px 0' }} />
+              <p className="text-[#9CA3AF] text-xs mb-3">Demo Access</p>
+              <Input
+                placeholder="Username"
+                value={devUser}
+                onChange={e => setDevUser(e.target.value)}
+                className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] rounded-none"
+              />
+              <Input
+                type="password"
+                placeholder="Password"
+                value={devPass}
+                onChange={e => setDevPass(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleDevLogin()}
+                className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] rounded-none mt-2"
+              />
+              {devError && (
+                <p className="text-[#ef4444] text-xs mt-2">{devError}</p>
+              )}
+              <Button
+                onClick={handleDevLogin}
+                disabled={devLoading || !devUser || !devPass}
+                className="w-full h-10 mt-3 bg-[#1f2022] hover:bg-[#2a2c2e] text-[#F2F3F5] font-medium transition-colors rounded-none"
+              >
+                {devLoading ? 'Signing in...' : 'Continue'}
+              </Button>
+            </>
+          )}
+        </motion.div>
+
+        {/* Mobile headline — only below lg */}
+        <div className="lg:hidden mt-10 px-4">
+          <h1 className="font-['Space_Grotesk'] text-[#F2F3F5] text-3xl font-bold leading-tight mb-3">
+            Your sales workflows, <span className="text-[#FF4500]">on autopilot.</span>
+          </h1>
+          <p className="text-[#9CA3AF] text-sm">
+            Connect Microsoft 365 and let AI handle your D365 logging.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }

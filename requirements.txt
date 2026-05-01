@@ -4,8 +4,9 @@ uvicorn==0.25.0
 python-multipart>=0.0.9
 
 # Database
-motor==3.3.1
-pymongo==4.5.0
+motor==3.3.2
+pymongo==4.6.3
+certifi>=2024.2.2
 
 # HTTP client
 httpx==0.28.1
@@ -21,6 +22,11 @@ groq>=0.9.0
 # Utilities
 python-dotenv>=1.0.1
 pydantic>=2.6.4
+openpyxl>=3.1.0
+pandas>=2.0.0
+
+# Browser automation (D365 cookie bypass — run `playwright install chromium` after pip install)
+playwright>=1.40.0
 
 # Dev / testing
 pytest>=8.0.0

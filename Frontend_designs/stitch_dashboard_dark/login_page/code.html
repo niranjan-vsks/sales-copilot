@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#ff4400",
+                        "background-light": "#f8f6f5",
+                        "background-dark": "#0f0f10",
+                        "card-dark": "#141416",
+                        "border-dark": "#2a2a2d",
+                        "ms-blue": "#0078d4"
+                    },
+                    fontFamily: {
+                        "display": ["Space Grotesk", "sans-serif"]
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0px",
+                        "lg": "0px",
+                        "xl": "0px",
+                        "full": "9999px"
+                    },
+                },
+            },
+        }
+    </script>
+<style>
+        body {
+            font-family: 'Space Grotesk', sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-background-light dark:bg-background-dark text-slate-900 dark:text-slate-100 min-h-screen flex">
+<!-- Left Panel (60% width) -->
+<div class="hidden lg:flex lg:w-[60%] flex-col justify-center px-12 xl:px-24 bg-background-dark border-r border-border-dark">
+<div class="max-w-2xl">
+<h1 class="text-white font-display text-5xl xl:text-6xl font-bold leading-tight mb-6">
+                Your sales workflows, <br/><span class="text-primary">on autopilot.</span>
+</h1>
+<p class="text-slate-400 text-lg xl:text-xl font-normal leading-relaxed mb-12">
+                Connect Microsoft 365 and let AI handle your D365 logging, email chains, and lead discovery.
+            </p>
+<div class="space-y-8">
+<!-- Feature 1 -->
+<div class="flex items-start gap-5">
+<div class="flex items-center justify-center size-12 bg-primary/10 border border-primary/20 text-primary">
+<span class="material-symbols-outlined">analytics</span>
+</div>
+<div>
+<h3 class="text-white text-xl font-bold font-display">Activity logging</h3>
+<p class="text-slate-400">Automated D365 logging for every interaction.</p>
+</div>
+</div>
+<!-- Feature 2 -->
+<div class="flex items-start gap-5">
+<div class="flex items-center justify-center size-12 bg-primary/10 border border-primary/20 text-primary">
+<span class="material-symbols-outlined">mail</span>
+</div>
+<div>
+<h3 class="text-white text-xl font-bold font-display">Email automation</h3>
+<p class="text-slate-400">Smart email chains that nurture leads effectively.</p>
+</div>
+</div>
+<!-- Feature 3 -->
+<div class="flex items-start gap-5">
+<div class="flex items-center justify-center size-12 bg-primary/10 border border-primary/20 text-primary">
+<span class="material-symbols-outlined">forum</span>
+</div>
+<div>
+<h3 class="text-white text-xl font-bold font-display">AI chat routing</h3>
+<p class="text-slate-400">Intelligent lead discovery via conversational AI.</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Right Panel (40% width) -->
+<div class="w-full lg:w-[40%] flex flex-col items-center justify-center px-6 sm:px-12 bg-background-dark">
+<div class="w-full max-w-md p-10 bg-card-dark border border-border-dark shadow-2xl">
+<!-- Header/Logo -->
+<div class="flex items-center gap-3 mb-10">
+<div class="size-10 bg-primary flex items-center justify-center">
+<span class="material-symbols-outlined text-white text-2xl">rocket_launch</span>
+</div>
+<h2 class="text-white text-2xl font-bold font-display tracking-tight">Sales Copilot</h2>
+</div>
+<!-- Login Content -->
+<div class="mb-8">
+<h3 class="text-white text-xl font-bold font-display mb-2">Sign in to continue</h3>
+<p class="text-slate-500 text-sm">Welcome back! Please authenticate with your corporate credentials.</p>
+</div>
+<!-- Microsoft Button -->
+<button class="w-full h-12 flex items-center justify-center gap-3 bg-ms-blue hover:bg-[#0067b8] text-white font-medium transition-colors mb-6">
+<svg height="21" viewbox="0 0 21 21" width="21" xmlns="http://www.w3.org/2000/svg">
+<path d="M1 1H10V10H1V1Z" fill="#F25022"></path>
+<path d="M11 1H20V10H11V1Z" fill="#7FBA00"></path>
+<path d="M1 11H10V20H1V11Z" fill="#00A4EF"></path>
+<path d="M11 11H20V20H11V11Z" fill="#FFB900"></path>
+</svg>
+<span>Sign in with Microsoft</span>
+</button>
+<!-- Muted footer text -->
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-slate-500 text-sm">info</span>
+<p class="text-slate-500 text-xs font-normal">
+                    Access requires a Cisco Microsoft account.
+                </p>
+</div>
+</div>
+<!-- Mobile specific context (visible only on small screens) -->
+<div class="lg:hidden mt-12 text-center px-4">
+<h1 class="text-white font-display text-3xl font-bold leading-tight mb-4">
+                Your sales workflows, on autopilot.
+            </h1>
+<p class="text-slate-400 text-sm">Connect Microsoft 365 and let AI handle your D365 logging.</p>
+</div>
+</div>
+</body></html>

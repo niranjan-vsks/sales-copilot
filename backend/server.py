@@ -1,102 +1,81 @@
-from fastapi import FastAPI, APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, UploadFile, File  # noqa: F401
+from fastapi.responses import RedirectResponse, FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from starlette.websockets import WebSocketState
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import ServerSelectionTimeoutError, PyMongoError
 import os
+import re
 import logging
-import json
 import secrets
-import subprocess
-import asyncio
-import httpx
-import websockets
-from websockets.exceptions import ConnectionClosed
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional
+from pydantic import BaseModel, ConfigDict
+from typing import Optional, Dict, Any, List
 import uuid
+import asyncio
 from datetime import datetime, timezone, timedelta
 
-# WhatsApp monitoring
-from whatsapp_monitor import get_whatsapp_status, fix_registered_flag
-# Gateway management (supervisor-based)
-from gateway_config import write_gateway_env, clear_gateway_env
-from supervisor_client import SupervisorClient
+# Logging configured first — before any module-level loggers fire
+from log_config import setup_logging
+setup_logging()
+
+# Sales Copilot modules
+from microsoft_auth import get_auth_url, handle_callback, get_access_token, get_d365_token
+from n8n_client import trigger_workflow
+from ai_chat import process_message
+from d365_client import D365Client
+from excel_processor import parse_file, detect_account_columns
+from knowledge_base import KnowledgeBaseService
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR.parent / '.env')
 
-# MongoDB connection
+# MongoDB
+import certifi as _certifi
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ.get('DB_NAME', 'moltbot_app')]
+_mongo_client = AsyncIOMotorClient(mongo_url, tlsCAFile=_certifi.where())
+db = _mongo_client[os.environ.get('DB_NAME', 'sales_copilot')]
+kb = KnowledgeBaseService(db)
 
-# Create the main app without a prefix
-app = FastAPI()
-
-# Create a router with the /api prefix
+app = FastAPI(title="Sales Copilot API")
 api_router = APIRouter(prefix="/api")
 
-# Moltbot Gateway Management
-MOLTBOT_PORT = 18789
-MOLTBOT_CONTROL_PORT = 18791
-CONFIG_DIR = os.path.expanduser("~/.clawdbot")
-CONFIG_FILE = os.path.join(CONFIG_DIR, "clawdbot.json")
-WORKSPACE_DIR = os.path.expanduser("~/clawd")
-
-# Global state for gateway (per-user)
-# Note: Process is managed by supervisor, we only track metadata here
-gateway_state = {
-    "token": None,
-    "provider": None,
-    "started_at": None,
-    "owner_user_id": None  # Track which user owns this instance
-}
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
+
+SESSION_EXPIRY_DAYS = 7
+INTERNAL_KEY = os.environ.get('INTERNAL_KEY', '')
+FRONTEND_URL = os.environ.get('FRONTEND_URL', '')
+D365_ORG_URL = os.environ.get('D365_ORG_URL', '')
+APP_ENV = os.environ.get('APP_ENVIRONMENT', 'prod')  # 'dev' | 'prod'
+
+# In dev mode the React build is served from the backend itself (one port, no CORS).
+# In prod the React app is deployed as a separate Render static site.
+FRONTEND_BUILD_DIR = ROOT_DIR.parent / "frontend" / "build"
+
+_D365_ENTITY_MAP = {
+    "phonecall":   "phonecalls",
+    "task":        "tasks",
+    "email":       "emails",
+    "appointment": "appointments",
+}
+_D365_SUBJECT_PREFIX = {
+    "phonecall":   "Call",
+    "task":        "Task",
+    "email":       "Email",
+    "appointment": "Meeting",
+}
+# statecode/statuscode for "Completed" per activity type.
+# These values are fixed by D365 — do not change them.
+# Emails are created as Draft (default) — no status override.
+_D365_COMPLETED_STATUS = {
+    "phonecall":   {"statecode": 1, "statuscode": 4},
+    "task":        {"statecode": 1, "statuscode": 5},
+    "appointment": {"statecode": 3, "statuscode": 4},
+}
 
 
 # ============== Pydantic Models ==============
-
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-class StatusCheckCreate(BaseModel):
-    client_name: str
-
-
-class OpenClawStartRequest(BaseModel):
-    provider: str = "emergent"  # "emergent", "anthropic", or "openai"
-    apiKey: Optional[str] = None  # Optional - uses Emergent key if not provided
-
-
-class OpenClawStartResponse(BaseModel):
-    ok: bool
-    controlUrl: str
-    token: str
-    message: str
-
-
-class OpenClawStatusResponse(BaseModel):
-    running: bool
-    pid: Optional[int] = None
-    provider: Optional[str] = None
-    started_at: Optional[str] = None
-    controlUrl: Optional[str] = None
-    owner_user_id: Optional[str] = None
-    is_owner: Optional[bool] = None
-
 
 class User(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -104,1038 +83,1420 @@ class User(BaseModel):
     email: str
     name: str
     picture: Optional[str] = None
+    role: str = "rep"
     created_at: Optional[datetime] = None
 
 
-class SessionRequest(BaseModel):
-    session_id: str
+class WorkflowExecuteRequest(BaseModel):
+    workflow_id: str
+    params: Dict[str, Any] = {}
 
 
-# ============== Authentication Helpers ==============
-
-EMERGENT_AUTH_URL = "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data"
-SESSION_EXPIRY_DAYS = 7
+class ChatRequest(BaseModel):
+    message: str
 
 
-async def get_instance_owner() -> Optional[dict]:
-    """Get the instance owner from database. Returns None if not locked yet."""
-    doc = await db.instance_config.find_one({"_id": "instance_owner"})
-    return doc
+class TeamMemberRequest(BaseModel):
+    email: str
+    display_name: str
+    role: str = "rep"
 
 
-async def set_instance_owner(user: User) -> None:
-    """Lock the instance to a specific user. Only succeeds if not already locked."""
-    await db.instance_config.update_one(
-        {"_id": "instance_owner"},
-        {
-            "$setOnInsert": {
-                "user_id": user.user_id,
-                "email": user.email,
-                "name": user.name,
-                "locked_at": datetime.now(timezone.utc)
-            }
-        },
-        upsert=True
-    )
+class SettingsUpdateRequest(BaseModel):
+    d365_org_url: Optional[str] = None
+    groq_model: Optional[str] = None
+    n8n_base_url: Optional[str] = None
+    dry_run_mode: Optional[bool] = None
 
 
-async def check_instance_access(user: User) -> bool:
-    """Check if user is allowed to access this instance. Returns True if allowed."""
-    owner = await get_instance_owner()
-    if not owner:
-        # Instance not locked yet - anyone can access
-        return True
-    return owner.get("user_id") == user.user_id
+class WebhookUrlRequest(BaseModel):
+    url: str
 
+
+class BrowserCookiesRequest(BaseModel):
+    cookies_json: str
+
+
+# ============== Auth Helpers ==============
 
 async def get_current_user(request: Request) -> Optional[User]:
-    """
-    Get current user from session token.
-    Checks cookie first, then Authorization header as fallback.
-    Returns None if not authenticated.
-    """
-    session_token = None
-
-    # Check cookie first
     session_token = request.cookies.get("session_token")
-
-    # Fallback to Authorization header
     if not session_token:
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.startswith("Bearer "):
             session_token = auth_header.split(" ")[1]
-
     if not session_token:
         return None
 
-    # Look up session in database
-    session_doc = await db.user_sessions.find_one(
-        {"session_token": session_token},
-        {"_id": 0}
-    )
+    try:
+        session_doc = await db.user_sessions.find_one(
+            {"session_token": session_token}, {"_id": 0}
+        )
+        if not session_doc:
+            return None
 
-    if not session_doc:
-        return None
+        expires_at = session_doc.get("expires_at")
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at)
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < datetime.now(timezone.utc):
+            return None
 
-    # Check expiry
-    expires_at = session_doc.get("expires_at")
-    if isinstance(expires_at, str):
-        expires_at = datetime.fromisoformat(expires_at)
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-
-    if expires_at < datetime.now(timezone.utc):
-        return None
-
-    # Get user
-    user_doc = await db.users.find_one(
-        {"user_id": session_doc["user_id"]},
-        {"_id": 0}
-    )
-
-    if not user_doc:
-        return None
-
-    return User(**user_doc)
+        user_doc = await db.users.find_one(
+            {"user_id": session_doc["user_id"]}, {"_id": 0}
+        )
+        if not user_doc:
+            return None
+        return User(**user_doc)
+    except (ServerSelectionTimeoutError, PyMongoError) as e:
+        logger.error(f"MongoDB unavailable in get_current_user: {e}")
+        raise HTTPException(status_code=503, detail="Database unavailable. Check MongoDB Atlas IP whitelist.")
 
 
 async def require_auth(request: Request) -> User:
-    """Dependency that requires authentication and instance access"""
     user = await get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    # Check if user is allowed to access this instance
-    if not await check_instance_access(user):
-        owner = await get_instance_owner()
-        raise HTTPException(
-            status_code=403, 
-            detail=f"This instance is locked to {owner.get('email', 'another user')}. Access denied."
-        )
     return user
 
 
-# ============== Auth Endpoints ==============
-
-@api_router.get("/auth/instance")
-async def get_instance_status():
-    """
-    Check if the instance is locked.
-    Public endpoint - only returns locked status, no owner details.
-    """
-    owner = await get_instance_owner()
-    if owner:
-        return {"locked": True}
-    return {"locked": False}
+async def require_admin(request: Request) -> User:
+    user = await require_auth(request)
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
 
 
-@api_router.post("/auth/session")
-async def create_session(request: SessionRequest, response: Response):
+# ============== Cookie helpers ==============
+
+def _cookie_sec() -> dict:
     """
-    Exchange session_id from Emergent Auth for a session token.
-    Creates user if not exists, creates session, sets cookie.
-    Blocks non-owners if instance is locked.
+    Return cookie security kwargs.
+    dev  (HTTP localhost): secure=False, samesite=lax — browsers refuse Secure cookies on HTTP
+    prod (HTTPS Render):   secure=True,  samesite=none — required for cross-origin cookie delivery
     """
+    if APP_ENV == 'dev':
+        return {"httponly": True, "secure": False, "samesite": "lax"}
+    return {"httponly": True, "secure": True, "samesite": "none"}
+
+
+# ============== Auth Routes ==============
+
+@api_router.get("/auth/microsoft")
+async def microsoft_login():
+    """Redirect to Microsoft Entra ID login"""
+    auth_url, state = await get_auth_url()
+    response = RedirectResponse(url=auth_url)
+    response.set_cookie("oauth_state", state, max_age=600, **_cookie_sec())
+    return response
+
+
+@api_router.get("/auth/microsoft/callback")
+async def microsoft_callback(request: Request):
+    """Exchange auth code for tokens, create session, redirect to frontend"""
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    stored_state = request.cookies.get("oauth_state")
+
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing authorization code")
+    if not state or state != stored_state:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state — possible CSRF")
+
     try:
-        # Call Emergent Auth to get user data
-        async with httpx.AsyncClient() as client:
-            auth_response = await client.get(
-                EMERGENT_AUTH_URL,
-                headers={"X-Session-ID": request.session_id},
-                timeout=10.0
-            )
+        user_info = await handle_callback(code, db)
+    except Exception as e:
+        logger.error(f"Microsoft callback error: {e}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
 
-        if auth_response.status_code != 200:
-            logger.error(f"Emergent Auth error: {auth_response.status_code} - {auth_response.text}")
-            raise HTTPException(status_code=401, detail="Invalid session_id")
+    email = user_info["email"]
+    name = user_info.get("name", email.split("@")[0])
 
-        auth_data = auth_response.json()
-        email = auth_data.get("email")
-        name = auth_data.get("name", email.split("@")[0] if email else "User")
-        picture = auth_data.get("picture")
+    # First admin auto-provisioning: if no admins exist, first login becomes admin
+    admin_count = await db.authorized_users.count_documents({"role": "admin"})
+    auth_user = await db.authorized_users.find_one({"email": email})
 
-        if not email:
-            raise HTTPException(status_code=400, detail="No email in auth response")
-
-        # Check if instance is locked to another user
-        owner = await get_instance_owner()
-        if owner and owner.get("email") != email:
-            logger.warning(f"Blocked login attempt from {email} - instance locked to {owner.get('email')}")
+    if not auth_user:
+        if admin_count == 0:
+            role = "admin"
+            await db.authorized_users.insert_one({
+                "email": email,
+                "display_name": name,
+                "role": "admin",
+                "added_by": "system",
+                "added_at": datetime.now(timezone.utc)
+            })
+        else:
             raise HTTPException(
                 status_code=403,
-                detail=f"This instance is private and locked to {owner.get('email')}. Access denied."
+                detail="Access denied. Ask your admin to add you to the team."
             )
+    else:
+        role = auth_user.get("role", "rep")
 
-        # Check if user exists
-        existing_user = await db.users.find_one({"email": email}, {"_id": 0})
-
-        if existing_user:
-            user_id = existing_user["user_id"]
-            # Update user info
-            await db.users.update_one(
-                {"user_id": user_id},
-                {"$set": {"name": name, "picture": picture}}
-            )
-        else:
-            # Create new user
-            user_id = f"user_{uuid.uuid4().hex[:12]}"
-            await db.users.insert_one({
-                "user_id": user_id,
-                "email": email,
-                "name": name,
-                "picture": picture,
-                "created_at": datetime.now(timezone.utc)
-            })
-
-        # Create session
-        session_token = secrets.token_hex(32)
-        expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_EXPIRY_DAYS)
-
-        await db.user_sessions.insert_one({
+    # Upsert user document
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        user_id = existing["user_id"]
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"name": name, "role": role}}
+        )
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
             "user_id": user_id,
-            "session_token": session_token,
-            "expires_at": expires_at,
+            "email": email,
+            "name": name,
+            "role": role,
+            "picture": user_info.get("picture"),
             "created_at": datetime.now(timezone.utc)
         })
 
-        # Set cookie
-        response.set_cookie(
-            key="session_token",
-            value=session_token,
-            httponly=True,
-            secure=True,
-            samesite="none",
-            path="/",
-            max_age=SESSION_EXPIRY_DAYS * 24 * 60 * 60
-        )
+    # Create session
+    session_token = secrets.token_hex(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_EXPIRY_DAYS)
+    await db.user_sessions.insert_one({
+        "user_id": user_id,
+        "session_token": session_token,
+        "expires_at": expires_at,
+        "created_at": datetime.now(timezone.utc)
+    })
 
-        # Get user data
-        user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-
-        return {
-            "ok": True,
-            "user": user_doc
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Session creation error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    redirect_url = f"{FRONTEND_URL}/#/dashboard" if FRONTEND_URL else "/#/dashboard"
+    redirect = RedirectResponse(url=redirect_url)
+    redirect.set_cookie(
+        "session_token", session_token,
+        path="/", max_age=SESSION_EXPIRY_DAYS * 24 * 60 * 60,
+        **_cookie_sec()
+    )
+    redirect.delete_cookie("oauth_state", **_cookie_sec())
+    return redirect
 
 
 @api_router.get("/auth/me")
 async def get_me(request: Request):
-    """Get current authenticated user"""
     user = await get_current_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return user.model_dump()
+    return user.model_dump(exclude={"created_at"})
 
 
 @api_router.post("/auth/logout")
 async def logout(request: Request, response: Response):
-    """Logout - delete session and clear cookie"""
     session_token = request.cookies.get("session_token")
-
     if session_token:
         await db.user_sessions.delete_one({"session_token": session_token})
+    response.delete_cookie("session_token", path="/", **_cookie_sec())
+    return {"ok": True}
 
-    response.delete_cookie(
-        key="session_token",
-        path="/",
-        secure=True,
-        samesite="none"
+
+# ── Dev / Demo Login ─────────────────────────────────────────────
+@api_router.get("/auth/dev-login/check")
+async def dev_login_check():
+    enabled = os.getenv("DEV_LOGIN_ENABLED", "false").lower() == "true"
+    return {"success": True, "data": {"enabled": enabled}, "error": None}
+
+
+class DevLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@api_router.post("/auth/dev-login")
+async def dev_login(body: DevLoginRequest):
+    if os.getenv("DEV_LOGIN_ENABLED", "false").lower() != "true":
+        raise HTTPException(status_code=404, detail="Not found")
+
+    expected_user = os.getenv("DEV_LOGIN_USER", "")
+    expected_pass = os.getenv("DEV_LOGIN_PASS", "")
+
+    if not expected_user or not expected_pass:
+        raise HTTPException(status_code=503, detail="Dev login not configured")
+
+    if body.username != expected_user or body.password != expected_pass:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    session_token = secrets.token_hex(32)
+    await db.users.update_one(
+        {"user_id": "dev-user"},
+        {"$set": {
+            "user_id": "dev-user",
+            "email": "demo@moltbot.dev",
+            "name": "Demo User",
+            "role": "admin",
+            "created_at": datetime.now(timezone.utc),
+        }},
+        upsert=True,
+    )
+    await db.user_sessions.update_one(
+        {"user_id": "dev-user"},
+        {"$set": {
+            "user_id": "dev-user",
+            "session_token": session_token,
+            "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
+            "created_at": datetime.now(timezone.utc),
+        }},
+        upsert=True,
     )
 
-    return {"ok": True, "message": "Logged out"}
+    resp = JSONResponse({"success": True, "data": {"name": "Demo User"}, "error": None})
+    cookie_opts = _cookie_sec()
+    resp.set_cookie("session_token", session_token, path="/", max_age=604800, **cookie_opts)
+    return resp
 
 
-# ============== Moltbot Helpers ==============
-
-# Persistent paths for Node.js and clawdbot
-NODE_DIR = "/root/nodejs"
-CLAWDBOT_DIR = "/root/.clawdbot-bin"
-CLAWDBOT_WRAPPER = "/root/run_clawdbot.sh"
-
-def get_clawdbot_command():
-    """Get the path to clawdbot executable"""
-    # Try wrapper script first
-    if os.path.exists(CLAWDBOT_WRAPPER):
-        return CLAWDBOT_WRAPPER
-    # Try persistent location
-    if os.path.exists(f"{CLAWDBOT_DIR}/clawdbot"):
-        return f"{CLAWDBOT_DIR}/clawdbot"
-    if os.path.exists(f"{NODE_DIR}/bin/clawdbot"):
-        return f"{NODE_DIR}/bin/clawdbot"
-    # Try system path
-    import shutil
-    clawdbot_path = shutil.which("clawdbot")
-    if clawdbot_path:
-        return clawdbot_path
-    return None
+@api_router.post("/auth/token-for-n8n")
+async def token_for_n8n(request: Request):
+    """Called by N8N to get a fresh MS access token on behalf of a user"""
+    key = request.headers.get("X-Internal-Key")
+    if not INTERNAL_KEY or key != INTERNAL_KEY:
+        raise HTTPException(status_code=403, detail="Invalid internal key")
+    body = await request.json()
+    user_id = body.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+    try:
+        access_token = await get_access_token(user_id, db)
+        return {"access_token": access_token}
+    except Exception as e:
+        logger.error(f"Token retrieval error for {user_id}: {e}")
+        raise HTTPException(status_code=401, detail="Could not retrieve access token")
 
 
-def ensure_moltbot_installed():
-    """Ensure Moltbot dependencies are installed"""
-    install_script = "/app/backend/install_moltbot_deps.sh"
+# ============== D365 Activity Helper ==============
 
-    # Check if clawdbot is available
-    clawdbot_cmd = get_clawdbot_command()
-    if clawdbot_cmd:
-        logger.info(f"Clawdbot found at: {clawdbot_cmd}")
-        return True
-
-    # Run installation script if available
-    if os.path.exists(install_script):
-        logger.info("Clawdbot not found, running installation script...")
-        try:
-            result = subprocess.run(
-                ["bash", install_script],
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
-            if result.returncode == 0:
-                logger.info("Moltbot dependencies installed successfully")
-                return True
-            else:
-                logger.error(f"Installation failed: {result.stderr}")
-                return False
-        except Exception as e:
-            logger.error(f"Installation script error: {e}")
-            return False
-
-    logger.error("Clawdbot not found and no installation script available")
-    return False
+def _build_record_url(entity_set: str, record_id: str) -> Optional[str]:
+    if not record_id or not D365_ORG_URL:
+        return None
+    entity_name = entity_set.rstrip("s")  # phonecalls → phonecall
+    return f"{D365_ORG_URL}/main.aspx?etn={entity_name}&id={record_id}&pagetype=entityrecord"
 
 
-def generate_token():
-    """Generate a random gateway token"""
-    return secrets.token_hex(32)
+async def _execute_d365_activity(user: User, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a D365 activity using the first available connection path.
 
-
-def create_moltbot_config(token: str = None, api_key: str = None, provider: str = "emergent", force_new_token: bool = False):
-    """Update clawdbot.json with gateway config and provider settings
-
-    Args:
-        token: Optional token. If not provided, reuses existing or generates new.
-        api_key: Optional API key for provider.
-        provider: The LLM provider - "emergent", "openai", or "anthropic".
-        force_new_token: If True, always generates a new token (triggers gateway restart).
-
-    Returns:
-        The token being used (existing or new).
+    Priority:
+      1. OAuth token   — normal path for consented users
+      2. Power Automate webhook — bypasses tenant OAuth consent
+      3. Browser cookie session — Playwright headless token extraction
     """
-    os.makedirs(CONFIG_DIR, exist_ok=True)
-    os.makedirs(WORKSPACE_DIR, exist_ok=True)
+    activity_type = params.get("activity_type", "phonecall")
+    entity_set = _D365_ENTITY_MAP.get(activity_type, "phonecalls")
+    account = params.get("account", "")
+    duration = int(params.get("duration_minutes", 30))
+    notes = params.get("notes", "")
 
-    # Load existing config if present
-    existing_config = {}
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                existing_config = json.load(f)
-        except:
-            pass
+    # Use explicit subject if provided; fall back to auto-generated
+    subject = params.get("subject") or (
+        f"{_D365_SUBJECT_PREFIX.get(activity_type, 'Activity')} with {account}"
+        if account else _D365_SUBJECT_PREFIX.get(activity_type, "Activity")
+    )
 
-    # Reuse existing token if available (to avoid triggering gateway restart)
-    existing_token = None
-    if not force_new_token:
-        try:
-            existing_token = existing_config.get("gateway", {}).get("auth", {}).get("token")
-        except:
-            pass
-
-    # Use existing token, provided token, or generate new
-    final_token = existing_token or token or generate_token()
-
-    logger.info(f"Config token: {'reusing existing' if existing_token else 'new token'}, provider: {provider}")
-
-    # Gateway config to merge
-    gateway_config = {
-        "mode": "local",
-        "port": MOLTBOT_PORT,
-        "bind": "lan",
-        "auth": {
-            "mode": "token",
-            "token": final_token
-        },
-        "controlUi": {
-            "enabled": True,
-            "allowInsecureAuth": True
-        }
+    payload: Dict[str, Any] = {
+        "subject": subject,
+        "actualdurationminutes": duration,
+        "description": notes,
     }
+    if params.get("start_time"):
+        # Ensure ISO 8601 with seconds and Z suffix (D365 Dataverse requires UTC format)
+        st = params["start_time"]
+        if len(st) == 16:   # "2026-04-09T12:00" → add :00Z
+            st = st + ":00Z"
+        elif not st.endswith("Z") and "+" not in st:
+            st = st + "Z"
+        payload["scheduledstart"] = st
+    if params.get("location"):
+        payload["location"] = params["location"]
+    if params.get("teams_meeting"):
+        payload["isonlinemeeting"] = True
 
-    # Merge config - preserve existing settings, update gateway
-    existing_config["gateway"] = gateway_config
+    if activity_type in _D365_COMPLETED_STATUS:
+        payload.update(_D365_COMPLETED_STATUS[activity_type])
 
-    # Ensure models section exists with merge mode
-    if "models" not in existing_config:
-        existing_config["models"] = {"mode": "merge", "providers": {}}
-    existing_config["models"]["mode"] = "merge"
-    if "providers" not in existing_config["models"]:
-        existing_config["models"]["providers"] = {}
-
-    # Ensure agents defaults section exists
-    if "agents" not in existing_config:
-        existing_config["agents"] = {"defaults": {}}
-    if "defaults" not in existing_config["agents"]:
-        existing_config["agents"]["defaults"] = {}
-    existing_config["agents"]["defaults"]["workspace"] = WORKSPACE_DIR
-
-    # Configure providers based on selection
-    if provider == "emergent":
-        # Use Emergent's proxy for both GPT and Claude
-        emergent_key = api_key or os.environ.get('EMERGENT_API_KEY', 'sk-emergent-1234')
-        emergent_base_url = os.environ.get('EMERGENT_BASE_URL', 'https://integrations.emergentagent.com/llm')
-
-        # Emergent GPT provider (openai-completions API)
-        emergent_gpt_provider = {
-            "baseUrl": f"{emergent_base_url}/",
-            "apiKey": emergent_key,
-            "api": "openai-completions",
-            "models": [
-                {
-                    "id": "gpt-5.2",
-                    "name": "GPT-5.2",
-                    "reasoning": True,
-                    "input": ["text"],
-                    "cost": {
-                        "input": 0.00000175,
-                        "output": 0.000014,
-                        "cacheRead": 0.000000175,
-                        "cacheWrite": 0.00000175
-                    },
-                    "contextWindow": 400000,
-                    "maxTokens": 128000
-                }
-            ]
+    # ── Path 1: OAuth token (standard path) ──────────────────────────────
+    try:
+        access_token = await get_d365_token(user.user_id, db)
+        d365 = D365Client(access_token)
+        record = await d365.create_activity(entity_set, payload)
+        record_id = record.get("activityid") or record.get("id", "")
+        logger.info("D365 activity created via OAuth for %s", user.email)
+        return {
+            "status": "success",
+            "d365_record_id": record_id,
+            "record_url": _build_record_url(entity_set, record_id),
+            "entity_set": entity_set,
+            "method": "oauth",
         }
+    except Exception as oauth_err:
+        logger.warning("OAuth D365 path failed for %s: %s — trying fallbacks", user.email, oauth_err)
 
-        # Emergent Claude provider (anthropic-messages API with authHeader)
-        emergent_claude_provider = {
-            "baseUrl": emergent_base_url,
-            "apiKey": emergent_key,
-            "api": "anthropic-messages",
-            "authHeader": True,
-            "models": [
-                {
-                    "id": "claude-sonnet-4-5",
-                    "name": "Claude Sonnet 4.5",
-                    "input": ["text"],
-                    "cost": {"input": 0.000003, "output": 0.000015, "cacheRead": 0.0000003, "cacheWrite": 0.00000375},
-                    "contextWindow": 200000,
-                    "maxTokens": 64000
-                },
-                {
-                    "id": "claude-opus-4-5",
-                    "name": "Claude Opus 4.5",
-                    "input": ["text"],
-                    "cost": {"input": 0.000005, "output": 0.000025, "cacheRead": 0.0000005, "cacheWrite": 0.00000625},
-                    "contextWindow": 200000,
-                    "maxTokens": 64000
-                }
-            ]
-        }
-
-        existing_config["models"]["providers"]["emergent-gpt"] = emergent_gpt_provider
-        existing_config["models"]["providers"]["emergent-claude"] = emergent_claude_provider
-
-        # Set primary model to Claude Sonnet
-        existing_config["agents"]["defaults"]["models"] = {
-            "emergent-gpt/gpt-5.2": {"alias": "gpt-5.2"},
-            "emergent-claude/claude-sonnet-4-5": {"alias": "sonnet"}
-        }
-        existing_config["agents"]["defaults"]["model"] = {
-            "primary": "emergent-claude/claude-sonnet-4-5"
-        }
-
-    elif provider == "openai":
-        # Direct OpenAI API with user's own key
-        openai_provider = {
-            "baseUrl": "https://api.openai.com/v1/",
-            "apiKey": api_key,
-            "api": "openai-completions",
-            "models": [
-                {
-                    "id": "gpt-5.2",
-                    "name": "GPT-5.2",
-                    "reasoning": True,
-                    "input": ["text", "image"],
-                    "cost": {
-                        "input": 0.00000175,
-                        "output": 0.000014,
-                        "cacheRead": 0.000000175,
-                        "cacheWrite": 0.00000175
-                    },
-                    "contextWindow": 400000,
-                    "maxTokens": 128000
-                },
-                {
-                    "id": "o4-mini-2025-04-16",
-                    "name": "o4-mini",
-                    "reasoning": True,
-                    "input": ["text", "image"],
-                    "cost": {
-                        "input": 0.0000011,
-                        "output": 0.0000044
-                    },
-                    "contextWindow": 200000,
-                    "maxTokens": 100000
-                },
-                {
-                    "id": "gpt-4o",
-                    "name": "GPT-4o",
-                    "reasoning": False,
-                    "input": ["text", "image"],
-                    "cost": {
-                        "input": 0.0000025,
-                        "output": 0.00001
-                    },
-                    "contextWindow": 128000,
-                    "maxTokens": 16384
-                }
-            ]
-        }
-
-        existing_config["models"]["providers"]["openai"] = openai_provider
-
-        # Set primary model to GPT-5.2
-        existing_config["agents"]["defaults"]["models"] = {
-            "openai/gpt-5.2": {"alias": "gpt-5.2"}
-        }
-        existing_config["agents"]["defaults"]["model"] = {
-            "primary": "openai/gpt-5.2"
-        }
-
-    elif provider == "anthropic":
-        # Direct Anthropic API with user's own key
-        anthropic_provider = {
-            "baseUrl": "https://api.anthropic.com",
-            "apiKey": api_key,
-            "api": "anthropic-messages",
-            "models": [
-                {
-                    "id": "claude-opus-4-5-20251101",
-                    "name": "Claude Opus 4.5",
-                    "input": ["text", "image"],
-                    "cost": {"input": 0.000015, "output": 0.000075, "cacheRead": 0.0000015, "cacheWrite": 0.00001875},
-                    "contextWindow": 200000,
-                    "maxTokens": 64000
-                }
-            ]
-        }
-
-        existing_config["models"]["providers"]["anthropic"] = anthropic_provider
-
-        # Set primary model to Claude Opus 4.5
-        existing_config["agents"]["defaults"]["models"] = {
-            "anthropic/claude-opus-4-5-20251101": {"alias": "opus"}
-        }
-        existing_config["agents"]["defaults"]["model"] = {
-            "primary": "anthropic/claude-opus-4-5-20251101"
-        }
-
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(existing_config, f, indent=2)
-
-    logger.info(f"Updated Moltbot config at {CONFIG_FILE} for provider: {provider}")
-    return final_token  # Return the token being used
-
-
-async def start_gateway_process(api_key: str, provider: str, owner_user_id: str):
-    """Start the Moltbot gateway process via supervisor (persistent, survives backend restarts)"""
-    global gateway_state
-
-    # Check if already running via supervisor
-    if SupervisorClient.status():
-        logger.info("Gateway already running via supervisor, recovering state...")
-
-        # Recover token from config
-        token = None
+    # ── Path 2: Power Automate webhook ────────────────────────────────────
+    config = await db.bot_config.find_one({"_id": "config"})
+    webhook_url = (config or {}).get("power_automate_webhook_url", "")
+    if webhook_url:
         try:
-            with open(CONFIG_FILE, 'r') as f:
-                config = json.load(f)
-            token = config.get("gateway", {}).get("auth", {}).get("token")
-        except:
-            pass
+            webhook_payload = {
+                **payload,
+                "activity_type": activity_type,
+                "account": account,
+                "activity_sub_type": params.get("activity_sub_type", ""),
+                "primary_attendee": params.get("primary_attendee", ""),
+                "other_attendees": params.get("other_attendees", ""),
+                "business_partner": params.get("business_partner", ""),
+                "customer_attendee": params.get("customer_attendee", ""),
+                "action_owners": params.get("action_owners", ""),
+                "partner_attendee": params.get("partner_attendee", ""),
+                "teams_meeting": bool(params.get("teams_meeting", False)),
+                "start_time": params.get("start_time", ""),
+                "mdm_id": params.get("mdm_id", ""),
+            }
+            record = await D365Client.create_activity_via_webhook(webhook_url, webhook_payload)
+            record_id = record.get("activityid", "")
+            # "success" only when D365 confirms the record with an ID.
+            # "pending" = webhook accepted but no record ID returned.
+            status = "success" if record_id else "pending"
+            logger.info("D365 activity via webhook for %s — status: %s", user.email, status)
+            if not record_id:
+                logger.warning(
+                    "Webhook accepted (HTTP %s) but returned no activityid. PA response: %s",
+                    record.get("_http_status"), record.get("_raw_response"),
+                )
+            return {
+                "status": status,
+                "d365_record_id": record_id,
+                "record_url": _build_record_url(entity_set, record_id),
+                "entity_set": entity_set,
+                "method": "webhook",
+                "webhook_http_status": record.get("_http_status"),
+                "webhook_raw_response": record.get("_raw_response"),
+                "pending_reason": (
+                    None if record_id
+                    else 'Webhook accepted. Update your Power Automate HTTP Response action to return {"activityid": "<guid>"} for D365 confirmation.'
+                ),
+            }
+        except Exception as webhook_err:
+            logger.warning("Webhook path failed: %s — trying browser session", webhook_err)
 
-        if not token:
-            token = generate_token()
-            create_moltbot_config(token=token, api_key=api_key, provider=provider, force_new_token=True)
+    # ── Path 3: Browser cookie session ────────────────────────────────────
+    try:
+        from d365_browser import get_d365_token_from_cookies  # noqa: PLC0415
+        browser_token = await get_d365_token_from_cookies(db)
+        if browser_token:
+            d365 = D365Client(browser_token)
+            record = await d365.create_activity(entity_set, payload)
+            record_id = record.get("activityid") or record.get("id", "")
+            logger.info("D365 activity created via browser cookie session for %s", user.email)
+            return {
+                "status": "success",
+                "d365_record_id": record_id,
+                "record_url": _build_record_url(entity_set, record_id),
+                "entity_set": entity_set,
+                "method": "browser",
+            }
+    except ImportError:
+        logger.warning("Playwright not installed — browser cookie path unavailable")
+    except Exception as browser_err:
+        logger.warning("Browser cookie path failed: %s", browser_err)
 
-        gateway_state["token"] = token
-        gateway_state["provider"] = provider
-        gateway_state["started_at"] = datetime.now(timezone.utc).isoformat()
-        gateway_state["owner_user_id"] = owner_user_id
-
-        # Update database
-        await db.moltbot_configs.update_one(
-            {"_id": "gateway_config"},
-            {
-                "$set": {
-                    "should_run": True,
-                    "owner_user_id": owner_user_id,
-                    "provider": provider,
-                    "token": token,
-                    "started_at": gateway_state["started_at"],
-                    "updated_at": datetime.now(timezone.utc)
-                }
-            },
-            upsert=True
-        )
-
-        return token
-
-    # Ensure clawdbot is installed
-    clawdbot_cmd = get_clawdbot_command()
-    if not clawdbot_cmd:
-        if not ensure_moltbot_installed():
-            raise HTTPException(status_code=500, detail="OpenClaw (clawdbot) is not installed. Please contact support.")
-        clawdbot_cmd = get_clawdbot_command()
-        if not clawdbot_cmd:
-            raise HTTPException(status_code=500, detail="Failed to find clawdbot after installation")
-
-    # Create config (reuses existing token to avoid gateway restarts)
-    token = create_moltbot_config(api_key=api_key, provider=provider)
-
-    # Write environment file for supervisor wrapper to load
-    write_gateway_env(token=token, api_key=api_key, provider=provider)
-
-    logger.info(f"Starting Moltbot gateway via supervisor on port {MOLTBOT_PORT}...")
-
-    # Start via supervisor (will auto-restart on crash, survives backend restarts)
-    if not SupervisorClient.start():
-        raise HTTPException(status_code=500, detail="Failed to start gateway via supervisor")
-
-    # Update in-memory state
-    gateway_state["token"] = token
-    gateway_state["provider"] = provider
-    gateway_state["started_at"] = datetime.now(timezone.utc).isoformat()
-    gateway_state["owner_user_id"] = owner_user_id
-
-    # Wait for gateway to be ready
-    max_wait = 60
-    start_time = asyncio.get_event_loop().time()
-
-    async with httpx.AsyncClient() as http_client:
-        while asyncio.get_event_loop().time() - start_time < max_wait:
-            try:
-                response = await http_client.get(f"http://127.0.0.1:{MOLTBOT_PORT}/", timeout=2.0)
-                if response.status_code == 200:
-                    logger.info("Moltbot gateway is ready!")
-
-                    # Store config in database for persistence (with should_run flag)
-                    await db.moltbot_configs.update_one(
-                        {"_id": "gateway_config"},
-                        {
-                            "$set": {
-                                "should_run": True,
-                                "owner_user_id": owner_user_id,
-                                "provider": provider,
-                                "token": token,
-                                "started_at": gateway_state["started_at"],
-                                "updated_at": datetime.now(timezone.utc)
-                            }
-                        },
-                        upsert=True
-                    )
-
-                    return token
-            except Exception:
-                pass
-            await asyncio.sleep(1)
-
-    # Check supervisor status if not ready
-    if not SupervisorClient.status():
-        raise HTTPException(status_code=500, detail="Gateway failed to start via supervisor")
-
-    raise HTTPException(status_code=500, detail="Gateway did not become ready in time")
+    # ── All paths failed ──────────────────────────────────────────────────
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "D365 connection unavailable. "
+            "Configure Power Automate webhook or browser cookies in Admin → Connections."
+        ),
+    )
 
 
-def check_gateway_running():
-    """Check if the gateway process is still running via supervisor"""
-    return SupervisorClient.status()
+# ============== Workflow Routes ==============
+
+DEFAULT_WORKFLOWS = [
+    {"id": "log-d365-activity",    "name": "Log D365 Activity",    "description": "Auto-create phone calls, tasks and interactions directly in Dynamics 365.", "status": "live",        "icon_name": "ClipboardList"},
+    {"id": "sync-emails",          "name": "Sync Emails",          "description": "Sync Outlook emails with D365 contact records automatically.",               "status": "coming_soon", "icon_name": "Mail"},
+    {"id": "search-leads",         "name": "Search Leads",         "description": "Find qualified leads using AI-powered prospecting.",                         "status": "coming_soon", "icon_name": "Search"},
+    {"id": "update-calendar",      "name": "Update Calendar",      "description": "Sync meetings between Outlook Calendar and D365.",                           "status": "coming_soon", "icon_name": "Calendar"},
+    {"id": "process-files",        "name": "Process Files",        "description": "Extract and log data from uploaded documents.",                              "status": "coming_soon", "icon_name": "FileText"},
+    {"id": "alert-notifications",  "name": "Alert Notifications",  "description": "Get notified of key CRM events and opportunities.",                          "status": "coming_soon", "icon_name": "Bell"},
+]
 
 
-# ============== Moltbot API Endpoints (Protected) ==============
+@api_router.get("/workflows/list")
+async def list_workflows(request: Request):
+    await require_auth(request)
+    config = await db.bot_config.find_one({"_id": "config"})
+    if config and config.get("workflows"):
+        return config["workflows"]
+    return DEFAULT_WORKFLOWS
 
-@api_router.get("/")
-async def root():
-    return {"message": "OpenClaw Hosting API"}
 
+@api_router.post("/workflows/execute")
+async def execute_workflow(body: WorkflowExecuteRequest, request: Request):
+    user = await require_auth(request)
+    execution_id = str(uuid.uuid4())
 
-@api_router.post("/openclaw/start", response_model=OpenClawStartResponse)
-async def start_moltbot(request: OpenClawStartRequest, req: Request):
-    """Start the Moltbot gateway with Emergent provider (requires auth)"""
-    user = await require_auth(req)
-
-    if request.provider not in ["emergent", "anthropic", "openai"]:
-        raise HTTPException(status_code=400, detail="Invalid provider. Use 'emergent', 'anthropic', or 'openai'")
-
-    # For non-emergent providers, API key is required
-    if request.provider in ["anthropic", "openai"] and (not request.apiKey or len(request.apiKey) < 10):
-        raise HTTPException(status_code=400, detail="API key required for anthropic/openai providers")
-
-    # Check if Moltbot is already running by another user
-    if check_gateway_running() and gateway_state["owner_user_id"] != user.user_id:
-        raise HTTPException(
-            status_code=403,
-            detail="OpenClaw is already running by another user. Please wait for them to stop it."
-        )
+    await db.workflow_executions.insert_one({
+        "id": execution_id,
+        "user_id": user.user_id,
+        "workflow_id": body.workflow_id,
+        "params": body.params,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc)
+    })
 
     try:
-        token = await start_gateway_process(request.apiKey, request.provider, user.user_id)
+        if body.workflow_id == "log-d365-activity":
+            result = await _execute_d365_activity(user, body.params)
+        else:
+            result = await trigger_workflow(
+                workflow_id=body.workflow_id,
+                payload={**body.params, "user_id": user.user_id, "execution_id": execution_id},
+            )
 
-        # Lock the instance to this user on first successful start
-        await set_instance_owner(user)
-        logger.info(f"Instance locked to user: {user.email}")
-
-        return OpenClawStartResponse(
-            ok=True,
-            controlUrl="/api/openclaw/ui/",
-            token=token,
-            message="OpenClaw started successfully with Emergent provider"
+        await db.workflow_executions.update_one(
+            {"id": execution_id},
+            {"$set": {
+                "status": result.get("status", "success"),
+                "result": result,
+                "d365_record_id": result.get("d365_record_id"),
+                "duration_ms": result.get("duration_ms"),
+                "completed_at": datetime.now(timezone.utc),
+            }},
         )
+        # Write to knowledge base (fire-and-forget)
+        if body.workflow_id == "log-d365-activity":
+            act_type = body.params.get("activity_type", "activity")
+            account = body.params.get("account", "")
+            subject = body.params.get("subject", "")
+            kb.fire(
+                user_id=user.user_id,
+                event_type="d365_activity_created",
+                event_summary=(
+                    f"{act_type.capitalize()} logged for {account}: \"{subject}\" "
+                    f"[{result.get('status', 'unknown')}] on {datetime.now(timezone.utc).strftime('%B %d')}"
+                ),
+                metadata={
+                    "activity_type": act_type,
+                    "account": account,
+                    "subject": subject,
+                    "status": result.get("status"),
+                    "record_id": result.get("d365_record_id", ""),
+                    "record_url": result.get("record_url", ""),
+                },
+            )
+
+        return {
+            "execution_id": execution_id,
+            "status": result.get("status", "success"),
+            "result": result,
+            "d365_record_url": result.get("record_url"),
+        }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to start Moltbot: {e}")
+        logger.error(f"Workflow execution error: {e}")
+        await db.workflow_executions.update_one(
+            {"id": execution_id},
+            {"$set": {"status": "failed", "error_message": str(e)}},
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@api_router.get("/openclaw/status", response_model=OpenClawStatusResponse)
-async def get_moltbot_status(request: Request):
-    """Get the current status of the Moltbot gateway"""
-    user = await get_current_user(request)
-    running = check_gateway_running()
+@api_router.get("/workflows/executions")
+async def get_executions(
+    request: Request,
+    page: int = 1,
+    limit: int = 20,
+    workflow_id: Optional[str] = None,
+    status: Optional[str] = None
+):
+    user = await require_auth(request)
+    query: Dict[str, Any] = {}
+    if user.role != "admin":
+        query["user_id"] = user.user_id
+    if workflow_id:
+        query["workflow_id"] = workflow_id
+    if status:
+        query["status"] = status
 
-    if running:
-        is_owner = user and gateway_state["owner_user_id"] == user.user_id
-        return OpenClawStatusResponse(
-            running=True,
-            pid=SupervisorClient.get_pid(),
-            provider=gateway_state["provider"],
-            started_at=gateway_state["started_at"],
-            controlUrl="/api/openclaw/ui/",
-            owner_user_id=gateway_state["owner_user_id"],
-            is_owner=is_owner
-        )
-    else:
-        return OpenClawStatusResponse(running=False)
+    total = await db.workflow_executions.count_documents(query)
+    items = await db.workflow_executions.find(query, {"_id": 0}) \
+        .sort("created_at", -1) \
+        .skip((page - 1) * limit) \
+        .limit(limit) \
+        .to_list(limit)
+
+    for item in items:
+        for key in ("created_at", "completed_at"):
+            if isinstance(item.get(key), datetime):
+                item[key] = item[key].isoformat()
+
+    return {"items": items, "total": total, "page": page, "pages": max(1, -(-total // limit))}
 
 
-@api_router.get("/openclaw/whatsapp/status")
-async def get_whatsapp_connection_status():
-    """Get basic WhatsApp connection status. Auto-fix handled by background watcher."""
-    return get_whatsapp_status()
+# ============== Chat Routes ==============
 
-
-@api_router.post("/openclaw/stop")
-async def stop_moltbot(request: Request):
-    """Stop the Moltbot gateway (only owner can stop)"""
+@api_router.post("/chat")
+async def chat(body: ChatRequest, request: Request):
     user = await require_auth(request)
 
-    global gateway_state
+    # Fetch last 10 messages for conversational memory
+    history_docs = await db.chat_history.find(
+        {"user_id": user.user_id},
+        {"_id": 0, "role": 1, "content": 1}
+    ).sort("created_at", -1).limit(10).to_list(10)
+    history_docs.reverse()
 
-    if not check_gateway_running():
-        # Clear should_run flag even if not running
-        await db.moltbot_configs.update_one(
-            {"_id": "gateway_config"},
-            {"$set": {"should_run": False, "updated_at": datetime.now(timezone.utc)}}
-        )
-        return {"ok": True, "message": "OpenClaw is not running"}
+    msg_id = str(uuid.uuid4())
+    await db.chat_history.insert_one({
+        "id": msg_id,
+        "user_id": user.user_id,
+        "role": "user",
+        "content": body.message,
+        "created_at": datetime.now(timezone.utc)
+    })
 
-    # Check if user is the owner
-    if gateway_state["owner_user_id"] != user.user_id:
-        raise HTTPException(status_code=403, detail="Only the owner can stop OpenClaw")
-
-    # Stop via supervisor
-    if not SupervisorClient.stop():
-        logger.error("Failed to stop gateway via supervisor")
-
-    # Clear the gateway env file
-    clear_gateway_env()
-
-    # Clear should_run flag in database
-    await db.moltbot_configs.update_one(
-        {"_id": "gateway_config"},
-        {"$set": {"should_run": False, "updated_at": datetime.now(timezone.utc)}}
-    )
-
-    # Clear in-memory state
-    gateway_state["token"] = None
-    gateway_state["provider"] = None
-    gateway_state["started_at"] = None
-    gateway_state["owner_user_id"] = None
-
-    return {"ok": True, "message": "OpenClaw stopped"}
-
-
-@api_router.get("/openclaw/token")
-async def get_moltbot_token(request: Request):
-    """Get the current gateway token for authentication (only owner)"""
-    user = await require_auth(request)
-
-    if not check_gateway_running():
-        raise HTTPException(status_code=404, detail="OpenClaw not running")
-
-    # Only owner can get the token
-    if gateway_state["owner_user_id"] != user.user_id:
-        raise HTTPException(status_code=403, detail="Only the owner can access the token")
-
-    return {"token": gateway_state.get("token")}
-
-
-# ============== Moltbot Proxy (Protected) ==============
-
-@api_router.api_route("/openclaw/ui/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
-async def proxy_moltbot_ui(request: Request, path: str = ""):
-    """Proxy requests to the Moltbot Control UI (only owner can access)"""
-    user = await get_current_user(request)
-
-    if not check_gateway_running():
-        return HTMLResponse(
-            content="<html><body><h1>OpenClaw not running</h1><p>Please start OpenClaw first.</p><a href='/'>Go to setup</a></body></html>",
-            status_code=503
-        )
-
-    # Check if user is the owner
-    if not user or gateway_state["owner_user_id"] != user.user_id:
-        return HTMLResponse(
-            content="<html><body><h1>Access Denied</h1><p>This OpenClaw instance is owned by another user.</p><a href='/'>Go back</a></body></html>",
-            status_code=403
-        )
-
-    target_url = f"http://127.0.0.1:{MOLTBOT_PORT}/{path}"
-
-    # Handle query string
-    if request.query_params:
-        target_url += f"?{request.query_params}"
-
-    async with httpx.AsyncClient() as client:
-        try:
-            # Forward the request
-            headers = dict(request.headers)
-            headers.pop("host", None)
-            headers.pop("content-length", None)
-
-            body = await request.body()
-
-            response = await client.request(
-                method=request.method,
-                url=target_url,
-                headers=headers,
-                content=body,
-                timeout=30.0
-            )
-
-            # Filter response headers
-            exclude_headers = {"content-encoding", "content-length", "transfer-encoding", "connection"}
-            response_headers = {
-                k: v for k, v in response.headers.items()
-                if k.lower() not in exclude_headers
-            }
-
-            # Get content and rewrite WebSocket URLs if HTML
-            content = response.content
-            content_type = response.headers.get("content-type", "")
-
-            # Get the current gateway token
-            current_token = gateway_state.get("token", "")
-
-            # If it's HTML, rewrite any WebSocket URLs to use our proxy
-            if "text/html" in content_type:
-                content_str = content.decode('utf-8', errors='ignore')
-                # Inject WebSocket URL override script with token
-                ws_override = f'''
-<script>
-// OpenClaw Proxy Configuration
-window.__MOLTBOT_PROXY_TOKEN__ = "{current_token}";
-window.__MOLTBOT_PROXY_WS_URL__ = (window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + window.location.host + '/api/openclaw/ws';
-
-// Override WebSocket to use proxy path
-(function() {{
-    const originalWS = window.WebSocket;
-    const proxyWsUrl = window.__MOLTBOT_PROXY_WS_URL__;
-
-    window.WebSocket = function(url, protocols) {{
-        let finalUrl = url;
-
-        // Rewrite any OpenClaw gateway URLs to use our proxy
-        if (url.includes('127.0.0.1:18789') ||
-            url.includes('localhost:18789') ||
-            url.includes('0.0.0.0:18789') ||
-            (url.includes(':18789') && !url.includes('/api/openclaw/'))) {{
-            finalUrl = proxyWsUrl;
-        }}
-
-        // If it's a relative URL or same-origin, redirect to proxy
-        try {{
-            const urlObj = new URL(url, window.location.origin);
-            if (urlObj.port === '18789' || urlObj.pathname === '/' && !url.startsWith(proxyWsUrl)) {{
-                finalUrl = proxyWsUrl;
-            }}
-        }} catch (e) {{}}
-
-        console.log('[OpenClaw Proxy] WebSocket:', url, '->', finalUrl);
-        return new originalWS(finalUrl, protocols);
-    }};
-
-    // Copy static properties
-    window.WebSocket.prototype = originalWS.prototype;
-    window.WebSocket.CONNECTING = originalWS.CONNECTING;
-    window.WebSocket.OPEN = originalWS.OPEN;
-    window.WebSocket.CLOSING = originalWS.CLOSING;
-    window.WebSocket.CLOSED = originalWS.CLOSED;
-}})();
-</script>
-'''
-                # Insert before </head> or at start of <body>
-                if '</head>' in content_str:
-                    content_str = content_str.replace('</head>', ws_override + '</head>')
-                elif '<body>' in content_str:
-                    content_str = content_str.replace('<body>', '<body>' + ws_override)
-                else:
-                    content_str = ws_override + content_str
-                content = content_str.encode('utf-8')
-
-            return Response(
-                content=content,
-                status_code=response.status_code,
-                headers=response_headers,
-                media_type=response.headers.get("content-type")
-            )
-        except httpx.RequestError as e:
-            logger.error(f"Proxy error: {e}")
-            raise HTTPException(status_code=502, detail="Failed to connect to OpenClaw")
-
-
-# Root proxy for Moltbot UI (handles /api/moltbot/ui without trailing path)
-@api_router.get("/openclaw/ui")
-async def proxy_moltbot_ui_root(request: Request):
-    """Redirect to Moltbot UI with trailing slash"""
-    return Response(
-        status_code=307,
-        headers={"Location": "/api/openclaw/ui/"}
-    )
-
-
-# WebSocket proxy for Moltbot (Protected)
-@api_router.websocket("/openclaw/ws")
-async def websocket_proxy(websocket: WebSocket):
-    """WebSocket proxy for Moltbot Control UI"""
-    await websocket.accept()
-
-    if not check_gateway_running():
-        await websocket.close(code=1013, reason="OpenClaw not running")
-        return
-
-    # Note: WebSocket auth is handled by the token in the connection itself
-    # The Control UI passes the token in the connect message
-
-    # Get the token from state
-    token = gateway_state.get("token")
-
-    # Moltbot expects WebSocket connection with optional auth in query params
-    moltbot_ws_url = f"ws://127.0.0.1:{MOLTBOT_PORT}/"
-
-    logger.info(f"WebSocket proxy connecting to: {moltbot_ws_url}")
+    # Build live app context for the AI
+    try:
+        context_snapshot = await kb.get_app_context_snapshot(user.user_id)
+    except Exception as ctx_err:
+        logger.warning("Failed to build context snapshot: %s", ctx_err)
+        context_snapshot = {}
 
     try:
-        # Additional headers for connection
-        extra_headers = {}
-        if token:
-            extra_headers["X-Auth-Token"] = token
-
-        async with websockets.connect(
-            moltbot_ws_url,
-            ping_interval=20,
-            ping_timeout=20,
-            close_timeout=10,
-            additional_headers=extra_headers if extra_headers else None
-        ) as moltbot_ws:
-
-            async def client_to_moltbot():
-                try:
-                    while True:
-                        try:
-                            data = await websocket.receive()
-                            if data["type"] == "websocket.receive":
-                                if "text" in data:
-                                    await moltbot_ws.send(data["text"])
-                                elif "bytes" in data:
-                                    await moltbot_ws.send(data["bytes"])
-                            elif data["type"] == "websocket.disconnect":
-                                break
-                        except WebSocketDisconnect:
-                            break
-                except Exception as e:
-                    logger.error(f"Client to Moltbot error: {e}")
-
-            async def moltbot_to_client():
-                try:
-                    async for message in moltbot_ws:
-                        if websocket.client_state == WebSocketState.CONNECTED:
-                            if isinstance(message, str):
-                                await websocket.send_text(message)
-                            else:
-                                await websocket.send_bytes(message)
-                except ConnectionClosed as e:
-                    logger.info(f"Moltbot WebSocket closed: {e}")
-                except Exception as e:
-                    logger.error(f"Moltbot to client error: {e}")
-
-            # Run both directions concurrently
-            done, pending = await asyncio.wait(
-                [
-                    asyncio.create_task(client_to_moltbot()),
-                    asyncio.create_task(moltbot_to_client())
-                ],
-                return_when=asyncio.FIRST_COMPLETED
-            )
-
-            # Cancel pending tasks
-            for task in pending:
-                task.cancel()
-
+        ai_response = await process_message(
+            body.message, user.user_id, history_docs,
+            context_snapshot=context_snapshot,
+        )
     except Exception as e:
-        logger.error(f"WebSocket proxy error: {e}")
-    finally:
+        logger.error(f"AI processing error: {e}")
+        raise HTTPException(status_code=500, detail="AI processing failed")
+
+    # Execute workflow if the AI decided to trigger one
+    workflow_result = None
+    action = ai_response.get("action", "answer")
+    workflow_type = ai_response.get("workflow_type")
+
+    if action == "trigger_workflow" and workflow_type and not ai_response.get("clarification_needed"):
+        params = {**ai_response.get("payload", {}), "activity_type": workflow_type}
+
+        # Look up MDM ID for the account so the PA webhook can link Regarding correctly
+        account_name = params.get("account", "")
+        if account_name and not params.get("mdm_id"):
+            default_file = await db.uploaded_files.find_one(
+                {"user_id": user.user_id, "is_default": True}, {"file_id": 1}
+            )
+            if default_file:
+                escaped = re.escape(account_name)
+                acc_doc = await db.user_account_data.find_one(
+                    {
+                        "user_id": user.user_id,
+                        "file_id": default_file["file_id"],
+                        "account_name": {"$regex": f"^{escaped}$", "$options": "i"},
+                    },
+                    {"l2_mdm_id_idg": 1, "_id": 0},
+                )
+                if not acc_doc:
+                    acc_doc = await db.user_account_data.find_one(
+                        {
+                            "user_id": user.user_id,
+                            "file_id": default_file["file_id"],
+                            "account_name": {"$regex": escaped, "$options": "i"},
+                        },
+                        {"l2_mdm_id_idg": 1, "_id": 0},
+                    )
+                if acc_doc and acc_doc.get("l2_mdm_id_idg"):
+                    params["mdm_id"] = acc_doc["l2_mdm_id_idg"]
+
         try:
-            if websocket.client_state == WebSocketState.CONNECTED:
-                await websocket.close(code=1011, reason="Proxy connection ended")
-        except:
-            pass
+            workflow_result = await _execute_d365_activity(user, params)
+            # Log to knowledge base
+            account = params.get("account", "")
+            subject = params.get("subject", "")
+            kb.fire(
+                user_id=user.user_id,
+                event_type="d365_activity_created",
+                event_summary=(
+                    f"{workflow_type.capitalize()} logged for {account}: \"{subject}\" "
+                    f"[{workflow_result.get('status', 'unknown')}] via AI chat on "
+                    f"{datetime.now(timezone.utc).strftime('%B %d')}"
+                ),
+                metadata={
+                    "activity_type": workflow_type,
+                    "account": account,
+                    "subject": subject,
+                    "status": workflow_result.get("status"),
+                    "record_id": workflow_result.get("d365_record_id", ""),
+                    "record_url": workflow_result.get("record_url", ""),
+                    "source": "chat",
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Chat workflow trigger failed: {e}")
+            workflow_result = {"status": "failed", "error": str(e)}
+
+    # Store assistant message
+    await db.chat_history.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user.user_id,
+        "role": "assistant",
+        "content": ai_response.get("user_message", ""),
+        "workflow_triggered": workflow_type if action == "trigger_workflow" else None,
+        "workflow_result": workflow_result,
+        "created_at": datetime.now(timezone.utc)
+    })
+
+    return {
+        "user_message_id": msg_id,
+        "action": action,
+        "workflow_triggered": workflow_type if action == "trigger_workflow" else None,
+        "workflow_result": workflow_result,
+        "clarification_needed": ai_response.get("clarification_needed"),
+        "message": ai_response.get("user_message"),
+        "app_context_loaded": bool(context_snapshot),
+    }
 
 
-# ============== Legacy Status Endpoints ==============
-
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
-
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-
-    return status_checks
+@api_router.get("/chat/history")
+async def chat_history(request: Request):
+    user = await require_auth(request)
+    items = await db.chat_history.find(
+        {"user_id": user.user_id}, {"_id": 0}
+    ).sort("created_at", -1).limit(50).to_list(50)
+    items.reverse()
+    for item in items:
+        if isinstance(item.get("created_at"), datetime):
+            item["created_at"] = item["created_at"].isoformat()
+    return items
 
 
-# Include the router in the main app
+# ============== Public Config Route (non-sensitive, auth required) ==============
+
+@api_router.get("/config")
+async def get_public_config(request: Request):
+    """Return non-sensitive public config for authenticated users (e.g. D365 org URL)."""
+    await require_auth(request)
+    db_config = await db.bot_config.find_one({"_id": "config"}, {"_id": 0, "d365_org_url": 1})
+    return {
+        "d365_org_url": (db_config or {}).get("d365_org_url") or D365_ORG_URL or "",
+    }
+
+
+# ============== D365 Routes ==============
+
+@api_router.get("/d365/test")
+async def test_d365_connection(request: Request):
+    user = await require_auth(request)
+    try:
+        access_token = await get_d365_token(user.user_id, db)
+        d365 = D365Client(access_token)
+        return await d365.test_connection()
+    except Exception as e:
+        return {"connected": False, "error_message": str(e)}
+
+
+_ENTITY_TO_TYPE = {
+    "phonecalls": "phonecall",
+    "tasks": "task",
+    "emails": "email",
+    "appointments": "appointment",
+}
+
+
+@api_router.get("/d365/activities")
+async def get_d365_activities(
+    request: Request,
+    entity_set: str = "phonecalls",
+    top: int = 50
+):
+    user = await require_auth(request)
+    try:
+        access_token = await get_d365_token(user.user_id, db)
+        d365 = D365Client(access_token)
+        return await d365.list_activities(entity_set=entity_set, top=top)
+    except Exception as e:
+        logger.warning(
+            "D365 direct fetch unavailable for %s (%s) — falling back to local log",
+            user.email, e,
+        )
+
+    # Fallback: read from local workflow_executions so the Activities page
+    # still shows data when OAuth / D365 token is not available.
+    activity_type = _ENTITY_TO_TYPE.get(entity_set, entity_set.rstrip("s"))
+    query = {
+        "user_id": user.user_id,
+        "workflow_id": "log-d365-activity",
+        "params.activity_type": activity_type,
+    }
+    docs = (
+        await db.workflow_executions.find(query, {"_id": 0})
+        .sort("created_at", -1)
+        .limit(top)
+        .to_list(top)
+    )
+    records = []
+    for doc in docs:
+        p = doc.get("params", {})
+        r = doc.get("result", {})
+        created = doc.get("created_at")
+        records.append({
+            "activityid": r.get("d365_record_id", ""),
+            "subject": p.get("subject", ""),
+            "actualdurationminutes": p.get("duration_minutes"),
+            "createdon": created.isoformat() if hasattr(created, "isoformat") else (str(created) if created else ""),
+            "description": p.get("notes", ""),
+            "_local": True,
+        })
+    return records
+
+
+# ── Power Automate webhook management (admin only) ────────────────────────────
+
+@api_router.get("/d365/webhook/status")
+async def d365_webhook_status(request: Request):
+    await require_admin(request)
+    config = await db.bot_config.find_one({"_id": "config"})
+    url = (config or {}).get("power_automate_webhook_url", "")
+    return {
+        "configured": bool(url),
+        "url_preview": (url[:45] + "…") if len(url) > 45 else url,
+    }
+
+
+@api_router.put("/d365/webhook/url")
+async def save_webhook_url(body: WebhookUrlRequest, request: Request):
+    admin = await require_admin(request)
+    if body.url and not body.url.startswith("https://"):
+        raise HTTPException(status_code=400, detail="Webhook URL must start with https://")
+    await db.bot_config.update_one(
+        {"_id": "config"},
+        {"$set": {"power_automate_webhook_url": body.url, "updated_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
+    kb.fire(
+        user_id=admin.user_id,
+        event_type="webhook_configured",
+        event_summary=f"Power Automate webhook URL {'updated' if body.url else 'cleared'} on {datetime.now(timezone.utc).strftime('%B %d')}",
+        metadata={"url_preview": (body.url[:50] + "…") if body.url and len(body.url) > 50 else body.url},
+    )
+    return {"ok": True}
+
+
+# ── Browser cookie session management (admin only) ────────────────────────────
+
+@api_router.get("/d365/browser/status")
+async def d365_browser_status(request: Request):
+    await require_admin(request)
+    from d365_browser import get_status  # noqa: PLC0415
+    return await get_status(db)
+
+
+@api_router.post("/d365/browser/save-cookies")
+async def save_browser_cookies(body: BrowserCookiesRequest, request: Request):
+    admin = await require_admin(request)
+    from d365_browser import save_cookies  # noqa: PLC0415
+    try:
+        await save_cookies(body.cookies_json, db)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    kb.fire(
+        user_id=admin.user_id,
+        event_type="cookie_session_saved",
+        event_summary=f"Browser cookie session saved on {datetime.now(timezone.utc).strftime('%B %d')} — fallback auth path active",
+        metadata={"method": "browser_cookies"},
+    )
+    return {"ok": True}
+
+
+# ============== Team Admin Routes ==============
+
+@api_router.get("/team")
+async def get_team(request: Request):
+    await require_admin(request)
+    members = await db.authorized_users.find({}, {"_id": 0}).to_list(200)
+    for m in members:
+        if isinstance(m.get("added_at"), datetime):
+            m["added_at"] = m["added_at"].isoformat()
+    return members
+
+
+@api_router.post("/team")
+async def add_team_member(body: TeamMemberRequest, request: Request):
+    admin = await require_admin(request)
+    if await db.authorized_users.find_one({"email": body.email}):
+        raise HTTPException(status_code=400, detail="User already exists in team")
+    await db.authorized_users.insert_one({
+        "email": body.email,
+        "display_name": body.display_name,
+        "role": body.role,
+        "added_by": admin.email,
+        "added_at": datetime.now(timezone.utc)
+    })
+    return {"ok": True}
+
+
+@api_router.delete("/team/{identifier}")
+async def remove_team_member(identifier: str, request: Request):
+    await require_admin(request)
+    result = await db.authorized_users.delete_one(
+        {"$or": [{"user_id": identifier}, {"email": identifier}]}
+    )
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Team member not found")
+    return {"ok": True}
+
+
+# ============== Settings Admin Routes ==============
+
+@api_router.get("/settings")
+async def get_settings(request: Request):
+    await require_admin(request)
+    config = await db.bot_config.find_one({"_id": "config"}, {"_id": 0})
+    if not config:
+        return {}
+    # Never expose raw secrets
+    for key in ("groq_api_key", "n8n_api_key", "token_encryption_key"):
+        config.pop(key, None)
+    if isinstance(config.get("updated_at"), datetime):
+        config["updated_at"] = config["updated_at"].isoformat()
+    return config
+
+
+@api_router.put("/settings")
+async def update_settings(body: SettingsUpdateRequest, request: Request):
+    await require_admin(request)
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    updates["updated_at"] = datetime.now(timezone.utc)
+    await db.bot_config.update_one({"_id": "config"}, {"$set": updates}, upsert=True)
+    return {"ok": True}
+
+
+# ============== Monitoring Admin Routes ==============
+
+@api_router.get("/monitoring/summary")
+async def monitoring_summary(request: Request):
+    await require_admin(request)
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    workflows_today = await db.workflow_executions.count_documents(
+        {"created_at": {"$gte": today_start}}
+    )
+    success_today = await db.workflow_executions.count_documents(
+        {"created_at": {"$gte": today_start}, "status": "success"}
+    )
+    success_rate = round(success_today / workflows_today * 100, 1) if workflows_today else 0.0
+
+    recent = await db.workflow_executions.find({}, {"_id": 0}) \
+        .sort("created_at", -1).limit(10).to_list(10)
+    for r in recent:
+        if isinstance(r.get("created_at"), datetime):
+            r["created_at"] = r["created_at"].isoformat()
+        if isinstance(r.get("completed_at"), datetime):
+            r["completed_at"] = r["completed_at"].isoformat()
+
+    return {
+        "workflows_today": workflows_today,
+        "success_rate": success_rate,
+        "recent_executions": recent,
+    }
+
+
+# ============== Internal Routes (N8N callbacks) ==============
+
+@api_router.post("/internal/log-execution")
+async def log_execution(request: Request):
+    """N8N calls this after a workflow completes to update the execution record"""
+    key = request.headers.get("X-Internal-Key")
+    if not INTERNAL_KEY or key != INTERNAL_KEY:
+        raise HTTPException(status_code=403, detail="Invalid internal key")
+
+    body = await request.json()
+    execution_id = body.get("execution_id")
+    if not execution_id:
+        raise HTTPException(status_code=400, detail="execution_id required")
+
+    await db.workflow_executions.update_one(
+        {"id": execution_id},
+        {"$set": {
+            "status": body.get("status", "success"),
+            "result": body.get("result"),
+            "d365_record_id": body.get("d365_record_id"),
+            "duration_ms": body.get("duration_ms"),
+            "error_message": body.get("error_message"),
+            "completed_at": datetime.now(timezone.utc)
+        }}
+    )
+    return {"ok": True}
+
+
+# ============== Excel / Account Import Routes ==============
+
+class AccountImportRequest(BaseModel):
+    rows: List[Dict[str, Any]]
+    mapping: Dict[str, str]  # {id_col: "...", name_col: "..."}
+
+
+class RuleCreateRequest(BaseModel):
+    name: str
+    activity_type: str = "phonecall"
+    subject_template: str
+    duration_minutes: int = 30
+    notes_template: Optional[str] = ""
+    account_filter: str = "all"  # "all" or comma-separated account_ids
+
+
+class BatchExecuteRequest(BaseModel):
+    account_ids: Optional[List[str]] = None  # None = use rule's filter; list = run only these
+
+
+@api_router.post("/excel/upload")
+async def excel_upload(request: Request, file: UploadFile = File(...)):
+    await get_current_user(request)
+    fname = file.filename or ""
+    if not fname.lower().endswith((".xlsx", ".xls", ".csv")):
+        raise HTTPException(status_code=400, detail="Only .xlsx or .csv files are supported")
+    contents = await file.read()
+    try:
+        rows, columns = parse_file(contents, fname)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not parse file: {e}")
+    if not rows:
+        raise HTTPException(status_code=422, detail="File is empty or has no data rows")
+    preview = rows[:5]
+    safe_preview = [
+        {k: (str(v) if v is not None else "") for k, v in row.items()}
+        for row in preview
+    ]
+    detected = detect_account_columns(columns)
+    return {"success": True, "data": {
+        "columns": columns,
+        "preview": safe_preview,
+        "total_rows": len(rows),
+        "detected_columns": detected,
+        "all_rows": [
+            {k: (str(v) if v is not None else "") for k, v in row.items()} for row in rows
+        ],
+    }, "error": None}
+
+
+@api_router.post("/excel/accounts/import")
+async def excel_accounts_import(body: AccountImportRequest, request: Request):
+    await get_current_user(request)
+    id_col = body.mapping.get("id_col", "")
+    name_col = body.mapping.get("name_col", "")
+    if not name_col:
+        raise HTTPException(status_code=400, detail="name_col mapping is required")
+
+    imported = 0
+    skipped = 0
+    for row in body.rows:
+        name_val = str(row.get(name_col, "") or "").strip()
+        if not name_val:
+            skipped += 1
+            continue
+        account_id = str(row.get(id_col, "") or "").strip() if id_col else ""
+        raw = {k: str(v) if v is not None else "" for k, v in row.items()}
+        await db.accounts.update_one(
+            {"account_id": account_id} if account_id else {"name": name_val},
+            {"$set": {
+                "account_id": account_id,
+                "name": name_val,
+                "raw": raw,
+                "imported_at": datetime.now(timezone.utc),
+            }},
+            upsert=True,
+        )
+        imported += 1
+
+    return {"success": True, "data": {"imported": imported, "skipped": skipped}, "error": None}
+
+
+@api_router.get("/excel/accounts")
+async def excel_accounts_list(request: Request, search: str = "", limit: int = 50):
+    await get_current_user(request)
+    query = {}
+    if search:
+        query = {"$or": [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"account_id": {"$regex": search, "$options": "i"}},
+        ]}
+    docs = await db.accounts.find(query, {"_id": 0}).limit(limit).to_list(limit)
+    return {"success": True, "data": {"accounts": docs}, "error": None}
+
+
+# ── Rules ──────────────────────────────────────────────────────────────────────
+
+@api_router.get("/excel/rules")
+async def get_rules(request: Request):
+    user = await require_auth(request)
+    rules = await db.activity_rules.find({"user_id": user.user_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    for r in rules:
+        if isinstance(r.get("created_at"), datetime):
+            r["created_at"] = r["created_at"].isoformat()
+    return {"success": True, "data": {"rules": rules}, "error": None}
+
+
+@api_router.post("/excel/rules")
+async def create_rule(body: RuleCreateRequest, request: Request):
+    user = await require_auth(request)
+    rule = {
+        "id": str(uuid.uuid4()),
+        "user_id": user.user_id,
+        "name": body.name,
+        "activity_type": body.activity_type,
+        "subject_template": body.subject_template,
+        "duration_minutes": body.duration_minutes,
+        "notes_template": body.notes_template or "",
+        "account_filter": body.account_filter,
+        "created_at": datetime.now(timezone.utc),
+    }
+    await db.activity_rules.insert_one({**rule})
+    rule["created_at"] = rule["created_at"].isoformat()
+    return {"success": True, "data": {"rule": rule}, "error": None}
+
+
+@api_router.delete("/excel/rules/{rule_id}")
+async def delete_rule(rule_id: str, request: Request):
+    user = await require_auth(request)
+    result = await db.activity_rules.delete_one({"id": rule_id, "user_id": user.user_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    return {"success": True, "data": {}, "error": None}
+
+
+async def _resolve_rule_accounts(rule: Dict[str, Any], user_id: str) -> List[Dict[str, Any]]:
+    """Return account dicts this rule targets, from the user's default file."""
+    account_filter = rule.get("account_filter", "all")
+
+    default_file = await db.uploaded_files.find_one(
+        {"user_id": user_id, "is_default": True}, {"file_id": 1}
+    )
+    if default_file:
+        file_id = default_file["file_id"]
+        base_q: Dict[str, Any] = {"user_id": user_id, "file_id": file_id}
+        if account_filter != "all":
+            ids = [a.strip() for a in account_filter.split(",") if a.strip()]
+            base_q["$or"] = [
+                {"l2_mdm_id_idg": {"$in": ids}},
+                {"account_name": {"$in": ids}},
+            ]
+        docs = await db.user_account_data.find(
+            base_q, {"_id": 0, "account_name": 1, "l2_mdm_id_idg": 1}
+        ).to_list(2000)
+        return [
+            {"account_id": d.get("l2_mdm_id_idg", ""), "name": d.get("account_name", ""), "mdm_id": d.get("l2_mdm_id_idg", "")}
+            for d in docs
+        ]
+
+    # Fall back to legacy accounts collection
+    if account_filter == "all":
+        docs = await db.accounts.find({}, {"_id": 0, "name": 1, "account_id": 1}).to_list(1000)
+    else:
+        ids = [a.strip() for a in account_filter.split(",") if a.strip()]
+        docs = await db.accounts.find({"account_id": {"$in": ids}}, {"_id": 0, "name": 1, "account_id": 1}).to_list(len(ids))
+    return [{"account_id": d.get("account_id", ""), "name": d.get("name", ""), "mdm_id": d.get("account_id", "")} for d in docs]
+
+
+@api_router.post("/excel/rules/{rule_id}/preview")
+async def preview_rule(rule_id: str, request: Request):
+    user = await require_auth(request)
+    rule = await db.activity_rules.find_one({"id": rule_id, "user_id": user.user_id}, {"_id": 0})
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    accounts = await _resolve_rule_accounts(rule, user.user_id)
+    template = rule.get("subject_template", "Activity")
+    rows = [
+        {
+            "account_id": a.get("account_id", ""),
+            "mdm_id": a.get("mdm_id", ""),
+            "name": a.get("name", ""),
+            "subject": template.replace("{name}", a.get("name", "")),
+            "activity_type": rule.get("activity_type", "appointment"),
+            "duration_minutes": rule.get("duration_minutes", 30),
+        }
+        for a in accounts
+    ]
+    return {"success": True, "data": {"rows": rows, "total": len(rows)}, "error": None}
+
+
+async def _run_batch_job(job_id: str, user: "User", rule: Dict[str, Any], accounts: List[Dict[str, Any]]) -> None:
+    """Background task: execute _execute_d365_activity for each account and update job progress."""
+    template = rule.get("subject_template", "Activity")
+    for idx, account in enumerate(accounts):
+        name   = account.get("name", "")
+        mdm_id = account.get("mdm_id", account.get("account_id", ""))
+        params = {
+            "activity_type": rule.get("activity_type", "appointment"),
+            "subject": template.replace("{name}", name),
+            "account": name,
+            "mdm_id": mdm_id,
+            "duration_minutes": rule.get("duration_minutes", 30),
+            "notes": rule.get("notes_template", "").replace("{name}", name),
+        }
+        try:
+            result = await _execute_d365_activity(user, params)
+            row_update = {
+                "status": result.get("status", "success"),
+                "record_id": result.get("d365_record_id", ""),
+                "record_url": result.get("record_url", ""),
+                "method": result.get("method", ""),
+            }
+        except Exception as e:
+            row_update = {"status": "failed", "error": str(e)}
+
+        status_field = "success" if row_update["status"] == "success" else (
+            "failed" if row_update["status"] == "failed" else "pending"
+        )
+        inc_done = 1 if status_field in ("success", "pending") else 0
+        inc_failed = 1 if status_field == "failed" else 0
+
+        await db.batch_jobs.update_one(
+            {"id": job_id},
+            {
+                "$set": {f"rows.{idx}": {**{"account_id": account.get("account_id", ""), "name": name}, **row_update}},
+                "$inc": {"done": inc_done, "failed": inc_failed},
+            },
+        )
+
+    await db.batch_jobs.update_one({"id": job_id}, {"$set": {"status": "complete"}})
+
+
+@api_router.post("/excel/rules/{rule_id}/execute")
+async def execute_rule(rule_id: str, body: BatchExecuteRequest, request: Request):
+    user = await require_auth(request)
+    rule = await db.activity_rules.find_one({"id": rule_id, "user_id": user.user_id}, {"_id": 0})
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+
+    all_accounts = await _resolve_rule_accounts(rule, user.user_id)
+    if body.account_ids is not None:
+        id_set = set(body.account_ids)
+        accounts = [a for a in all_accounts if a.get("account_id", "") in id_set or a.get("name", "") in id_set]
+    else:
+        accounts = all_accounts
+
+    if not accounts:
+        raise HTTPException(status_code=400, detail="No accounts match this rule")
+
+    job_id = str(uuid.uuid4())
+    initial_rows = [{"account_id": a.get("account_id", ""), "name": a.get("name", ""), "status": "pending"} for a in accounts]
+    await db.batch_jobs.insert_one({
+        "id": job_id,
+        "rule_id": rule_id,
+        "user_id": user.user_id,
+        "total": len(accounts),
+        "done": 0,
+        "failed": 0,
+        "status": "running",
+        "rows": initial_rows,
+        "created_at": datetime.now(timezone.utc),
+    })
+
+    asyncio.create_task(_run_batch_job(job_id, user, rule, accounts))
+    return {"success": True, "data": {"job_id": job_id, "total": len(accounts)}, "error": None}
+
+
+@api_router.get("/excel/jobs/{job_id}")
+async def get_job(job_id: str, request: Request):
+    await get_current_user(request)
+    job = await db.batch_jobs.find_one({"id": job_id}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if isinstance(job.get("created_at"), datetime):
+        job["created_at"] = job["created_at"].isoformat()
+    return {"success": True, "data": job, "error": None}
+
+
+# ============== File Management Routes ==============
+
+
+@api_router.post("/files/upload-accounts")
+async def upload_accounts_file(request: Request, file: UploadFile = File(...)):
+    """Upload an Excel/CSV file of accounts. Parses it, auto-detects columns,
+    stores metadata in uploaded_files and rows in user_account_data."""
+    user = await require_auth(request)
+    fname = file.filename or ""
+    logger.info("upload_accounts: user=%s file=%s", user.user_id, fname)
+    if not fname.lower().endswith((".xlsx", ".xls", ".csv")):
+        raise HTTPException(status_code=400, detail="Only .xlsx or .csv files are supported")
+
+    contents = await file.read()
+    try:
+        rows, columns = parse_file(contents, fname)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Could not parse file: {e}")
+    if not rows:
+        raise HTTPException(status_code=422, detail="File is empty or has no data rows")
+
+    detected = detect_account_columns(columns)
+    file_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+
+    # Persist file metadata
+    await db.uploaded_files.insert_one({
+        "file_id": file_id,
+        "user_id": user.user_id,
+        "filename": fname,
+        "row_count": len(rows),
+        "columns": columns,
+        "detected_columns": detected,
+        "is_default": False,
+        "uploaded_at": now,
+    })
+
+    # Persist parsed rows mapped to canonical schema
+    id_idg_col = detected.get("l2_mdm_id_idg")
+    id_isg_col = detected.get("l2_mdm_id_isg")
+    name_col = detected.get("account_name")
+    pc_col = detected.get("parent_child")
+    pn_col = detected.get("parent_name")
+
+    docs = []
+    for row in rows:
+        name_val = str(row.get(name_col, "") or "").strip() if name_col else ""
+        if not name_val:
+            continue
+        docs.append({
+            "file_id": file_id,
+            "user_id": user.user_id,
+            "l2_mdm_id_idg": str(row.get(id_idg_col, "") or "").strip() if id_idg_col else "",
+            "l2_mdm_id_isg": str(row.get(id_isg_col, "") or "").strip() if id_isg_col else "",
+            "account_name": name_val,
+            "parent_child": str(row.get(pc_col, "") or "").strip() if pc_col else "",
+            "parent_name": str(row.get(pn_col, "") or "").strip() if pn_col else "",
+            "uploaded_at": now,
+        })
+
+    if docs:
+        await db.user_account_data.insert_many(docs)
+
+    kb.fire(
+        user_id=user.user_id,
+        event_type="file_upload",
+        event_summary=f"User uploaded {fname} with {len(docs)} accounts on {datetime.now(timezone.utc).strftime('%B %d')}",
+        metadata={"file_id": file_id, "filename": fname, "row_count": len(rows), "imported_accounts": len(docs)},
+    )
+
+    logger.info("upload_accounts: success rows=%d imported=%d", len(rows), len(docs))
+    return {"success": True, "data": {
+        "file_id": file_id,
+        "filename": fname,
+        "row_count": len(rows),
+        "imported_accounts": len(docs),
+        "detected_columns": detected,
+    }, "error": None}
+
+
+@api_router.get("/files/")
+async def list_uploaded_files(request: Request):
+    user = await require_auth(request)
+    files = await db.uploaded_files.find(
+        {"user_id": user.user_id}, {"_id": 0}
+    ).sort("uploaded_at", -1).to_list(100)
+    for f in files:
+        if isinstance(f.get("uploaded_at"), datetime):
+            f["uploaded_at"] = f["uploaded_at"].isoformat()
+    return {"success": True, "data": {"files": files}, "error": None}
+
+
+@api_router.post("/files/{file_id}/set-default")
+async def set_default_file(file_id: str, request: Request):
+    user = await require_auth(request)
+    doc = await db.uploaded_files.find_one({"file_id": file_id, "user_id": user.user_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="File not found")
+    # Clear existing default for this user, then set new one
+    await db.uploaded_files.update_many(
+        {"user_id": user.user_id}, {"$set": {"is_default": False}}
+    )
+    await db.uploaded_files.update_one(
+        {"file_id": file_id}, {"$set": {"is_default": True}}
+    )
+    kb.fire(
+        user_id=user.user_id,
+        event_type="file_default_set",
+        event_summary=f"User set file {doc.get('filename', file_id)} as the default account list",
+        metadata={"file_id": file_id, "filename": doc.get("filename", "")},
+    )
+    return {"success": True, "data": {"file_id": file_id}, "error": None}
+
+
+@api_router.delete("/files/{file_id}")
+async def delete_uploaded_file(file_id: str, request: Request):
+    user = await require_auth(request)
+    result = await db.uploaded_files.delete_one({"file_id": file_id, "user_id": user.user_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="File not found")
+    # Remove the associated account data rows
+    await db.user_account_data.delete_many({"file_id": file_id, "user_id": user.user_id})
+    return {"success": True, "data": {}, "error": None}
+
+
+@api_router.get("/files/{file_id}/accounts")
+async def get_file_accounts(file_id: str, request: Request, q: str = "", limit: int = 100):
+    """Return accounts stored for a specific uploaded file, with optional search."""
+    user = await require_auth(request)
+    doc = await db.uploaded_files.find_one({"file_id": file_id, "user_id": user.user_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="File not found")
+    query: Dict[str, Any] = {"user_id": user.user_id, "file_id": file_id}
+    if q:
+        query["$or"] = [
+            {"account_name": {"$regex": q, "$options": "i"}},
+            {"l2_mdm_id_idg": {"$regex": q, "$options": "i"}},
+        ]
+    docs = await db.user_account_data.find(
+        query,
+        {"_id": 0, "account_name": 1, "l2_mdm_id_idg": 1, "l2_mdm_id_isg": 1},
+    ).limit(limit).to_list(limit)
+    return {"success": True, "data": {"accounts": docs, "total": doc.get("row_count", 0)}, "error": None}
+
+
+# ============== Account Search Routes ==============
+
+@api_router.get("/accounts/search")
+async def search_accounts(request: Request, q: str = "", limit: int = 10):
+    """Search accounts by name OR MDM ID. Searches user_account_data (new flow) first,
+    falls back to legacy accounts collection (ExcelPage import flow)."""
+    user = await require_auth(request)
+
+    # Try user_account_data (new /api/files/upload-accounts flow)
+    default_file = await db.uploaded_files.find_one(
+        {"user_id": user.user_id, "is_default": True}, {"file_id": 1}
+    )
+    if default_file:
+        query: Dict[str, Any] = {"user_id": user.user_id, "file_id": default_file["file_id"]}
+        if q:
+            query["$or"] = [
+                {"account_name": {"$regex": q, "$options": "i"}},
+                {"l2_mdm_id_idg": {"$regex": q, "$options": "i"}},
+            ]
+        docs = await db.user_account_data.find(
+            query,
+            {"_id": 0, "account_name": 1, "l2_mdm_id_idg": 1, "l2_mdm_id_isg": 1, "parent_child": 1, "parent_name": 1},
+        ).limit(limit).to_list(limit)
+        if docs:
+            return {"success": True, "data": {"results": docs}, "error": None}
+
+    # Fall back to legacy accounts collection (/api/excel/accounts/import flow)
+    legacy_query: Dict[str, Any] = {}
+    if q:
+        legacy_query = {"$or": [
+            {"name": {"$regex": q, "$options": "i"}},
+            {"account_id": {"$regex": q, "$options": "i"}},
+        ]}
+    legacy = await db.accounts.find(legacy_query, {"_id": 0, "name": 1, "account_id": 1}).limit(limit).to_list(limit)
+    results = [
+        {"account_name": d["name"], "l2_mdm_id_idg": d.get("account_id", ""), "l2_mdm_id_isg": "", "parent_child": "", "parent_name": ""}
+        for d in legacy if d.get("name")
+    ]
+    return {"success": True, "data": {"results": results}, "error": None}
+
+
+# ============== App Registration ==============
+
 app.include_router(api_router)
 
 app.add_middleware(
@@ -1146,129 +1507,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Static frontend (dev mode only) ──────────────────────────────────────────
+# In dev: `yarn build` once, then uvicorn serves everything on http://localhost:8000
+# In prod: frontend is a separate Render static site — this block is skipped
+if APP_ENV == 'dev' and FRONTEND_BUILD_DIR.exists():
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(FRONTEND_BUILD_DIR / "static")),
+        name="static",
+    )
+    logger.info("Dev mode: serving React build from %s", FRONTEND_BUILD_DIR)
 
-# Background task for auto-fixing WhatsApp
-whatsapp_watcher_task = None
-
-async def whatsapp_auto_fix_watcher():
-    """Auto-fix Baileys registered=false bug every 5 seconds."""
-    logger.info("[whatsapp-watcher] Background watcher started")
-    while True:
-        await asyncio.sleep(5)
-        try:
-            status = get_whatsapp_status()
-            logger.info(f"[whatsapp-watcher] Check: linked={status['linked']}, registered={status['registered']}, phone={status['phone']}")
-            if status["linked"] and not status["registered"]:
-                logger.info("[whatsapp-watcher] DETECTED registered=false, applying fix...")
-                if fix_registered_flag():
-                    logger.info("[whatsapp-watcher] Fix applied, restarting gateway via supervisor...")
-                    result = subprocess.run(["supervisorctl", "restart", "clawdbot-gateway"], capture_output=True, text=True)
-                    logger.info(f"[whatsapp-watcher] Supervisor restart result: {result.stdout} {result.stderr}")
-        except Exception as e:
-            logger.warning(f"[whatsapp-watcher] Error: {e}")
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str = ""):  # noqa: ARG001
+        """Catch-all: serve index.html for all non-API routes (HashRouter SPA)."""
+        index = FRONTEND_BUILD_DIR / "index.html"
+        if index.exists():
+            return FileResponse(str(index))
+        return {"error": "Frontend build not found — run `yarn build` in frontend/"}
 
 
 @app.on_event("startup")
 async def startup_event():
-    """Run on server startup - ensure Moltbot dependencies are installed and auto-start gateway if needed"""
-    global whatsapp_watcher_task, gateway_state
-
-    logger.info("Server starting up...")
-
-    # Reload supervisor config to pick up any changes
-    SupervisorClient.reload_config()
-
-    # Check and install Moltbot dependencies if needed
-    clawdbot_cmd = get_clawdbot_command()
-    if clawdbot_cmd:
-        logger.info(f"Moltbot dependencies ready: {clawdbot_cmd}")
-    else:
-        logger.info("Moltbot dependencies not found, will install on first use")
-
-    # Check database for persistent gateway config
-    config_doc = None
-    try:
-        config_doc = await db.moltbot_configs.find_one({"_id": "gateway_config"})
-    except Exception as e:
-        logger.warning(f"Could not read gateway config from database: {e}")
-
-    should_run = config_doc.get("should_run", False) if config_doc else False
-    logger.info(f"Gateway should_run flag: {should_run}")
-
-    # Check if gateway is already running via supervisor
-    if SupervisorClient.status():
-        pid = SupervisorClient.get_pid()
-        logger.info(f"Gateway already running via supervisor (PID: {pid})")
-
-        gateway_state["provider"] = config_doc.get("provider", "emergent") if config_doc else "emergent"
-
-        # Recover token from config file
-        try:
-            with open(CONFIG_FILE, 'r') as f:
-                config = json.load(f)
-            gateway_state["token"] = config.get("gateway", {}).get("auth", {}).get("token")
-            logger.info("Recovered gateway token from config file")
-        except Exception as e:
-            logger.warning(f"Could not recover gateway token: {e}")
-
-        # Recover owner info from database
-        if config_doc:
-            gateway_state["owner_user_id"] = config_doc.get("owner_user_id")
-            gateway_state["started_at"] = config_doc.get("started_at")
-            logger.info(f"Recovered gateway owner from database: {gateway_state['owner_user_id']}")
-
-    elif should_run and config_doc:
-        # Gateway should be running but isn't - auto-start it!
-        logger.info("Gateway should_run=True but not running - auto-starting via supervisor...")
-
-        # Recover token from config file or database
-        token = config_doc.get("token")
-        if not token:
-            try:
-                with open(CONFIG_FILE, 'r') as f:
-                    config = json.load(f)
-                token = config.get("gateway", {}).get("auth", {}).get("token")
-            except:
-                token = generate_token()
-
-        # Write env file for supervisor wrapper
-        write_gateway_env(token=token, provider=config_doc.get("provider", "emergent"))
-
-        # Start via supervisor
-        if SupervisorClient.start():
-            logger.info("Gateway auto-started successfully via supervisor")
-
-            # Wait briefly for it to be ready
-            await asyncio.sleep(3)
-
-            gateway_state["token"] = token
-            gateway_state["provider"] = config_doc.get("provider", "emergent")
-            gateway_state["owner_user_id"] = config_doc.get("owner_user_id")
-            gateway_state["started_at"] = config_doc.get("started_at")
-        else:
-            logger.error("Failed to auto-start gateway via supervisor")
-
-    # Start WhatsApp auto-fix background watcher
-    whatsapp_watcher_task = asyncio.create_task(whatsapp_auto_fix_watcher())
-    logger.info("[whatsapp-watcher] Background watcher task created (checks every 5s)")
+    logger.info("Sales Copilot API starting up...")
+    # Create MongoDB indexes for performance
+    await db.user_sessions.create_index("session_token")
+    await db.user_sessions.create_index("expires_at")
+    await db.workflow_executions.create_index("user_id")
+    await db.workflow_executions.create_index("created_at")
+    await db.chat_history.create_index([("user_id", 1), ("created_at", -1)])
+    await db.user_account_data.create_index([("user_id", 1), ("account_name", 1)])
+    await db.uploaded_files.create_index([("user_id", 1), ("uploaded_at", -1)])
+    await db.app_knowledge_base.create_index([("user_id", 1), ("timestamp", -1)])
+    await db.app_knowledge_base.create_index([("user_id", 1), ("event_type", 1)])
+    logger.info("MongoDB indexes ensured.")
 
 
 @app.on_event("shutdown")
-async def shutdown_db_client():
-    global whatsapp_watcher_task
-
-    # Stop WhatsApp watcher task
-    if whatsapp_watcher_task:
-        whatsapp_watcher_task.cancel()
-        try:
-            await whatsapp_watcher_task
-        except asyncio.CancelledError:
-            pass
-
-    # NOTE: We do NOT stop the gateway on backend shutdown!
-    # The gateway is managed by supervisor and should continue running
-    # independently of the backend. It will auto-restart on crash and
-    # survive backend restarts.
-    logger.info("Backend shutting down - gateway will continue running via supervisor")
-
-    client.close()
+async def shutdown_event():
+    _mongo_client.close()
+    logger.info("Sales Copilot API shut down.")
