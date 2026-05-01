@@ -9,6 +9,7 @@ import os
 import re
 import logging
 import secrets
+import bcrypt
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 from typing import Optional, Dict, Any, List
@@ -100,6 +101,12 @@ class TeamMemberRequest(BaseModel):
     email: str
     display_name: str
     role: str = "rep"
+    password: Optional[str] = None
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -344,6 +351,49 @@ async def dev_login(body: DevLoginRequest):
     resp = JSONResponse({"success": True, "data": {"name": "Demo User"}, "error": None})
     cookie_opts = _cookie_sec()
     resp.set_cookie("session_token", session_token, path="/", max_age=604800, **cookie_opts)
+    return resp
+
+
+@api_router.post("/auth/login")
+async def login(body: LoginRequest):
+    """Per-user email+password login. Password must have been set when team member was added."""
+    email = body.email.lower().strip()
+    auth_user = await db.authorized_users.find_one({"email": email})
+    if not auth_user or not auth_user.get("password_hash"):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    stored_hash = auth_user["password_hash"]
+    if not bcrypt.checkpw(body.password.encode("utf-8"), stored_hash.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    name = auth_user.get("display_name", email.split("@")[0])
+    role = auth_user.get("role", "rep")
+
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing:
+        user_id = existing["user_id"]
+        await db.users.update_one({"user_id": user_id}, {"$set": {"name": name, "role": role}})
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        await db.users.insert_one({
+            "user_id": user_id,
+            "email": email,
+            "name": name,
+            "role": role,
+            "created_at": datetime.now(timezone.utc),
+        })
+
+    session_token = secrets.token_hex(32)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=SESSION_EXPIRY_DAYS)
+    await db.user_sessions.insert_one({
+        "user_id": user_id,
+        "session_token": session_token,
+        "expires_at": expires_at,
+        "created_at": datetime.now(timezone.utc),
+    })
+
+    resp = JSONResponse({"success": True, "data": {"name": name}, "error": None})
+    resp.set_cookie("session_token", session_token, path="/", max_age=SESSION_EXPIRY_DAYS * 24 * 60 * 60, **_cookie_sec())
     return resp
 
 
@@ -924,15 +974,19 @@ async def get_team(request: Request):
 @api_router.post("/team")
 async def add_team_member(body: TeamMemberRequest, request: Request):
     admin = await require_admin(request)
-    if await db.authorized_users.find_one({"email": body.email}):
+    email = body.email.lower().strip()
+    if await db.authorized_users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="User already exists in team")
-    await db.authorized_users.insert_one({
-        "email": body.email,
+    doc: Dict[str, Any] = {
+        "email": email,
         "display_name": body.display_name,
         "role": body.role,
         "added_by": admin.email,
-        "added_at": datetime.now(timezone.utc)
-    })
+        "added_at": datetime.now(timezone.utc),
+    }
+    if body.password:
+        doc["password_hash"] = bcrypt.hashpw(body.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    await db.authorized_users.insert_one(doc)
     return {"ok": True}
 
 
@@ -1053,7 +1107,7 @@ class BatchExecuteRequest(BaseModel):
 
 @api_router.post("/excel/upload")
 async def excel_upload(request: Request, file: UploadFile = File(...)):
-    await get_current_user(request)
+    await require_auth(request)
     fname = file.filename or ""
     if not fname.lower().endswith((".xlsx", ".xls", ".csv")):
         raise HTTPException(status_code=400, detail="Only .xlsx or .csv files are supported")
@@ -1083,7 +1137,7 @@ async def excel_upload(request: Request, file: UploadFile = File(...)):
 
 @api_router.post("/excel/accounts/import")
 async def excel_accounts_import(body: AccountImportRequest, request: Request):
-    await get_current_user(request)
+    await require_auth(request)
     id_col = body.mapping.get("id_col", "")
     name_col = body.mapping.get("name_col", "")
     if not name_col:
@@ -1115,7 +1169,7 @@ async def excel_accounts_import(body: AccountImportRequest, request: Request):
 
 @api_router.get("/excel/accounts")
 async def excel_accounts_list(request: Request, search: str = "", limit: int = 50):
-    await get_current_user(request)
+    await require_auth(request)
     query = {}
     if search:
         query = {"$or": [
@@ -1300,8 +1354,8 @@ async def execute_rule(rule_id: str, body: BatchExecuteRequest, request: Request
 
 @api_router.get("/excel/jobs/{job_id}")
 async def get_job(job_id: str, request: Request):
-    await get_current_user(request)
-    job = await db.batch_jobs.find_one({"id": job_id}, {"_id": 0})
+    user = await require_auth(request)
+    job = await db.batch_jobs.find_one({"id": job_id, "user_id": user.user_id}, {"_id": 0})
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if isinstance(job.get("created_at"), datetime):

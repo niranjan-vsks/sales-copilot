@@ -1,42 +1,39 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { BarChart2, Mail, MessageSquare } from 'lucide-react';
+import { BarChart2, ClipboardList, MessageSquare, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-
-const MS_ICON = (
-  <svg width="20" height="20" viewBox="0 0 21 21" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-    <path d="M1 1H10V10H1V1Z" fill="#F25022" />
-    <path d="M11 1H20V10H11V1Z" fill="#7FBA00" />
-    <path d="M1 11H10V20H1V11Z" fill="#00A4EF" />
-    <path d="M11 11H20V20H11V11Z" fill="#FFB900" />
-  </svg>
-);
+import { Label } from '@/components/ui/label';
 
 const FEATURES = [
   {
-    icon: BarChart2,
+    icon: ClipboardList,
     title: 'Activity logging',
-    desc: 'Automated D365 logging for every interaction.',
+    desc: 'Auto-create D365 phone calls, tasks, and appointments in seconds.',
   },
   {
-    icon: Mail,
-    title: 'Email automation',
-    desc: 'Smart email chains that nurture leads effectively.',
+    icon: Zap,
+    title: 'Bulk automation',
+    desc: 'Run activity rules across hundreds of accounts at once via Power Automate.',
   },
   {
     icon: MessageSquare,
-    title: 'AI chat routing',
-    desc: 'Intelligent lead discovery via conversational AI.',
+    title: 'AI chat workflows',
+    desc: 'Trigger D365 actions and get live app context through conversational AI.',
   },
 ];
 
 export default function LoginPage() {
-  const [devEnabled, setDevEnabled] = useState(false);
-  const [devUser, setDevUser] = useState('');
-  const [devPass, setDevPass] = useState('');
-  const [devLoading, setDevLoading] = useState(false);
-  const [devError, setDevError] = useState('');
+  const [email, setEmail]       = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState('');
+
+  const [devEnabled, setDevEnabled]   = useState(false);
+  const [devUser, setDevUser]         = useState('');
+  const [devPass, setDevPass]         = useState('');
+  const [devLoading, setDevLoading]   = useState(false);
+  const [devError, setDevError]       = useState('');
 
   useEffect(() => {
     fetch('/api/auth/dev-login/check')
@@ -45,8 +42,28 @@ export default function LoginPage() {
       .catch(() => {});
   }, []);
 
-  const handleLogin = () => {
-    window.location.href = '/api/auth/microsoft';
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ email, password }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setError(err.detail || 'Invalid credentials');
+        return;
+      }
+      window.location.href = '/#/dashboard';
+    } catch {
+      setError('Connection error. Is the backend running?');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleDevLogin = async () => {
@@ -94,8 +111,8 @@ export default function LoginPage() {
             transition={{ duration: 0.4, delay: 0.1 }}
             className="text-[#9CA3AF] text-lg xl:text-xl leading-relaxed mb-12"
           >
-            Connect Microsoft 365 and let AI handle your D365 logging,
-            email chains, and lead discovery.
+            Connect your D365 org and let AI handle activity logging,
+            bulk automation, and lead discovery.
           </motion.p>
 
           <motion.div
@@ -152,30 +169,59 @@ export default function LoginPage() {
               Sign in to continue
             </h3>
             <p className="text-[#9CA3AF] text-sm">
-              Welcome back — authenticate with your corporate Microsoft account.
+              Enter your credentials to access your workspace.
             </p>
           </div>
 
-          {/* Microsoft sign-in button */}
-          <Button
-            onClick={handleLogin}
-            data-testid="microsoft-signin-button"
-            className="w-full h-12 flex items-center justify-center gap-3 bg-[#0078D4] hover:bg-[#0067b8] text-white font-medium transition-colors mb-6 rounded-none"
-          >
-            {MS_ICON}
-            Sign in with Microsoft
-          </Button>
+          {/* Email + Password form */}
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Email</Label>
+              <Input
+                type="email"
+                placeholder="you@company.com"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                required
+                className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] placeholder:text-[#9CA3AF]/60 rounded-none h-10 text-sm focus-visible:ring-[#FF4500] focus-visible:border-[#FF4500]"
+              />
+            </div>
+            <div>
+              <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Password</Label>
+              <Input
+                type="password"
+                placeholder="••••••••"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                required
+                className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] placeholder:text-[#9CA3AF]/60 rounded-none h-10 text-sm focus-visible:ring-[#FF4500] focus-visible:border-[#FF4500]"
+              />
+            </div>
+
+            {error && (
+              <p className="text-[#ef4444] text-xs">{error}</p>
+            )}
+
+            <Button
+              type="submit"
+              data-testid="login-button"
+              disabled={loading || !email || !password}
+              className="w-full h-11 bg-[#FF4500] hover:bg-[#e63e00] text-white font-medium transition-colors rounded-none disabled:opacity-60"
+            >
+              {loading ? 'Signing in…' : 'Sign in'}
+            </Button>
+          </form>
 
           {/* Footer note */}
-          <p className="text-[#9CA3AF] text-xs">
-            Access requires a Cisco Microsoft 365 account. Contact your admin to be added to the team.
+          <p className="text-[#9CA3AF] text-xs mt-6">
+            Contact your admin to be added to the team.
           </p>
 
-          {/* Dev / Demo login — only renders when DEV_LOGIN_ENABLED=true */}
+          {/* Dev / Demo override — only renders when DEV_LOGIN_ENABLED=true */}
           {devEnabled && (
             <>
               <div style={{ borderTop: '1px solid #1f2022', margin: '24px 0' }} />
-              <p className="text-[#9CA3AF] text-xs mb-3">Demo Access</p>
+              <p className="text-[#9CA3AF] text-xs mb-3">Admin Override</p>
               <Input
                 placeholder="Username"
                 value={devUser}
@@ -210,7 +256,7 @@ export default function LoginPage() {
             Your sales workflows, <span className="text-[#FF4500]">on autopilot.</span>
           </h1>
           <p className="text-[#9CA3AF] text-sm">
-            Connect Microsoft 365 and let AI handle your D365 logging.
+            Connect your D365 org and let AI handle activity logging.
           </p>
         </div>
       </div>

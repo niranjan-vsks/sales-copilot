@@ -13,7 +13,6 @@ import MonitoringPage    from "@/pages/admin/MonitoringPage";
 import FileManagementPage from "@/pages/admin/FileManagementPage";
 
 import AuthGuard         from "@/components/AuthGuard";
-import TopNavLayout      from "@/layouts/TopNavLayout";
 import SidebarLayout     from "@/layouts/SidebarLayout";
 
 function AppRouter() {
@@ -22,20 +21,7 @@ function AppRouter() {
       {/* Public */}
       <Route path="/login" element={<LoginPage />} />
 
-      {/* Dashboard + Chat — TopNavLayout */}
-      <Route
-        element={
-          <AuthGuard>
-            <TopNavLayout />
-          </AuthGuard>
-        }
-      >
-        <Route path="/dashboard" element={<DashboardPage />} />
-        <Route path="/chat"      element={<ChatPage />} />
-        <Route path="/excel"     element={<Navigate to="/admin/file-management" replace />} />
-      </Route>
-
-      {/* Activities + Admin — SidebarLayout */}
+      {/* All authenticated routes — SidebarLayout */}
       <Route
         element={
           <AuthGuard>
@@ -43,9 +29,13 @@ function AppRouter() {
           </AuthGuard>
         }
       >
+        <Route path="/dashboard"  element={<DashboardPage />} />
+        <Route path="/chat"       element={<ChatPage />} />
         <Route path="/activities" element={<ActivitiesPage />} />
+        <Route path="/excel"      element={<Navigate to="/admin/file-management" replace />} />
       </Route>
 
+      {/* Admin-only routes */}
       <Route
         element={
           <AuthGuard requireAdmin>

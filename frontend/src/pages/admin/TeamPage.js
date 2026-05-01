@@ -26,6 +26,7 @@ const memberSchema = z.object({
   display_name: z.string().min(2, 'Name must be at least 2 characters'),
   email: z.string().email('Invalid email address'),
   role: z.enum(['rep', 'admin']),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
 });
 
 const ROLE_BADGE = {
@@ -168,7 +169,7 @@ export default function TeamPage() {
               <DialogTitle className="font-['Space_Grotesk'] text-lg font-bold">Add Team Member</DialogTitle>
             </div>
             <DialogDescription className="text-[#9CA3AF] text-sm">
-              Grant access to Sales Copilot for a Microsoft 365 user.
+              Add a team member and set their initial login password.
             </DialogDescription>
           </DialogHeader>
 
@@ -197,6 +198,20 @@ export default function TeamPage() {
               />
               {errors.email && (
                 <p className="text-xs text-[#ef4444] mt-1">{errors.email.message}</p>
+              )}
+            </div>
+
+            <div>
+              <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Initial Password</Label>
+              <Input
+                {...register('password')}
+                data-testid="input-member-password"
+                type="password"
+                placeholder="Min. 8 characters"
+                className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] placeholder:text-[#9CA3AF]/60 rounded-none h-9 text-sm focus-visible:ring-[#FF4500] focus-visible:border-[#FF4500]"
+              />
+              {errors.password && (
+                <p className="text-xs text-[#ef4444] mt-1">{errors.password.message}</p>
               )}
             </div>
 

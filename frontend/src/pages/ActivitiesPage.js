@@ -37,7 +37,7 @@ export default function ActivitiesPage() {
   const [activities, setActivities] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [entitySet, setEntitySet] = useState('phonecalls');
+  const [entitySet, setEntitySet] = useState('appointments');
   const [executions, setExecutions] = useState([]);
   const [d365OrgUrl, setD365OrgUrl] = useState('');
 

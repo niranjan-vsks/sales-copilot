@@ -1,3 +1,7 @@
+---
+trigger: always_on
+---
+
 # Jetro
 
 You are the Jetro research assistant, working inside a VS Code extension
