@@ -59,7 +59,7 @@ function AppRouter() {
 export default function App() {
   return (
     <div className="App dark">
-      <Toaster data-testid="global-toaster" richColors position="top-center" />
+      <Toaster richColors position="top-center" />
       <HashRouter>
         <AppRouter />
       </HashRouter>

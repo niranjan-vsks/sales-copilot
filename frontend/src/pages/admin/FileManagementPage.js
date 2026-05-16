@@ -2,10 +2,15 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import {
   Upload, Trash2, Star, StarOff, FileSpreadsheet, Loader2,
   CheckCircle, AlertCircle, ChevronDown, ChevronRight, Search,
-  Plus, Play, Eye, Zap, X, AlertTriangle,
+  Plus, Play, Eye, Zap, X, AlertTriangle, ClipboardList, FileText, CheckCircle2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Badge } from '@/components/ui/badge';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel,
+  AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
+  AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
 import api from '@/lib/api';
 
@@ -14,17 +19,10 @@ const CARD_VARIANTS = {
   visible: { opacity: 1, y: 0, transition: { duration: 0.3 } },
 };
 
-const ACTIVITY_TYPES = [
-  { value: 'appointment', label: 'Appointment' },
-  { value: 'phonecall',   label: 'Phone Call' },
-  { value: 'task',        label: 'Task' },
-];
-
 const DURATION_OPTIONS = [15, 30, 45, 60, 90, 120];
 
 const EMPTY_RULE_FORM = {
   name: '',
-  activity_type: 'appointment',
   subject_template: 'Activity with {name}',
   duration_minutes: 30,
   notes_template: '',
@@ -48,12 +46,29 @@ export default function FileManagementPage() {
   const [ruleForm, setRuleForm]         = useState(EMPTY_RULE_FORM);
   const [creatingRule, setCreatingRule] = useState(false);
 
+  // Delete confirmations
+  const [deleteFileTarget, setDeleteFileTarget] = useState(null); // { fileId, filename }
+  const [deleteRuleTarget, setDeleteRuleTarget] = useState(null); // { ruleId, ruleName }
+
   // Preview modal
   const [preview, setPreview] = useState({ open: false, rule: null, rows: [], loading: false });
 
-  // Job progress modal
+  // Rules job progress modal
   const [job, setJob] = useState({ open: false, jobId: null, total: 0, done: 0, failed: 0, status: 'running', rows: [] });
   const jobPollRef = useRef(null);
+
+  // ── Activity Sheet state ─────────────────────────────────────────────────────
+  const [sheetTab, setSheetTab]             = useState('paste'); // 'paste' | 'upload'
+  const [sheetText, setSheetText]           = useState('');
+  const [sheetFile, setSheetFile]           = useState(null);
+  const [sheetParsing, setSheetParsing]     = useState(false);
+  const [sheetParseResult, setSheetParseResult] = useState(null); // { new_rows, duplicate_rows, total_new, total_duplicate }
+  const [sheetDragOver, setSheetDragOver]   = useState(false);
+  const sheetFileInputRef = useRef(null);
+
+  // Sheet job progress modal
+  const [sheetJob, setSheetJob] = useState({ open: false, jobId: null, total: 0, done: 0, failed: 0, status: 'running', rows: [] });
+  const sheetJobPollRef = useRef(null);
 
   // ── Load files ───────────────────────────────────────────────────────────────
   const loadFiles = () => {
@@ -75,7 +90,7 @@ export default function FileManagementPage() {
 
   useEffect(() => { loadFiles(); loadRules(); }, [loadRules]);
 
-  // ── Upload ───────────────────────────────────────────────────────────────────
+  // ── Upload (account file) ────────────────────────────────────────────────────
   const uploadFile = async (file) => {
     if (!file) return;
     const ext = file.name.split('.').pop().toLowerCase();
@@ -116,8 +131,12 @@ export default function FileManagementPage() {
   };
 
   // ── Delete file ──────────────────────────────────────────────────────────────
-  const deleteFile = async (fileId, filename) => {
-    if (!window.confirm(`Delete "${filename}"? This removes all imported accounts.`)) return;
+  const deleteFile = (fileId, filename) => setDeleteFileTarget({ fileId, filename });
+
+  const confirmDeleteFile = async () => {
+    if (!deleteFileTarget) return;
+    const { fileId } = deleteFileTarget;
+    setDeleteFileTarget(null);
     try {
       await api.delete(`/files/${fileId}`);
       setFiles((prev) => prev.filter((f) => f.file_id !== fileId));
@@ -158,7 +177,6 @@ export default function FileManagementPage() {
     try {
       const res = await api.post('/excel/rules', {
         name: ruleForm.name.trim(),
-        activity_type: ruleForm.activity_type,
         subject_template: ruleForm.subject_template.trim(),
         duration_minutes: Number(ruleForm.duration_minutes),
         notes_template: ruleForm.notes_template.trim(),
@@ -176,8 +194,12 @@ export default function FileManagementPage() {
   };
 
   // ── Delete rule ───────────────────────────────────────────────────────────────
-  const handleDeleteRule = async (ruleId, ruleName) => {
-    if (!window.confirm(`Delete rule "${ruleName}"?`)) return;
+  const handleDeleteRule = (ruleId, ruleName) => setDeleteRuleTarget({ ruleId, ruleName });
+
+  const confirmDeleteRule = async () => {
+    if (!deleteRuleTarget) return;
+    const { ruleId } = deleteRuleTarget;
+    setDeleteRuleTarget(null);
     try {
       await api.delete(`/excel/rules/${ruleId}`);
       setRules((prev) => prev.filter((r) => r.id !== ruleId));
@@ -230,7 +252,83 @@ export default function FileManagementPage() {
     setJob({ open: false, jobId: null, total: 0, done: 0, failed: 0, status: 'running', rows: [] });
   };
 
-  useEffect(() => () => clearInterval(jobPollRef.current), []);
+  // ── Activity Sheet handlers ───────────────────────────────────────────────────
+  const handleSheetFileDrop = (e) => {
+    e.preventDefault();
+    setSheetDragOver(false);
+    const f = e.dataTransfer.files?.[0];
+    if (f) setSheetFile(f);
+  };
+
+  const handleSheetFileInput = (e) => {
+    const f = e.target.files?.[0];
+    if (f) setSheetFile(f);
+    e.target.value = '';
+  };
+
+  const handleSheetParse = async () => {
+    setSheetParsing(true);
+    setSheetParseResult(null);
+    try {
+      let res;
+      if (sheetTab === 'paste') {
+        res = await api.post('/activity-sheets/parse-text', { text: sheetText });
+      } else {
+        if (!sheetFile) { toast.error('No file selected'); setSheetParsing(false); return; }
+        const formData = new FormData();
+        formData.append('file', sheetFile);
+        const fetchRes = await fetch(`${process.env.REACT_APP_BACKEND_URL || ''}/api/activity-sheets/parse-file`, {
+          method: 'POST', credentials: 'include', body: formData,
+        });
+        const json = await fetchRes.json();
+        if (!fetchRes.ok) throw new Error(json.error || json.detail || 'Parse failed');
+        res = json;
+      }
+      setSheetParseResult(res.data);
+    } catch (err) {
+      toast.error('Parse failed', { description: err?.response?.data?.detail || err.message });
+    } finally {
+      setSheetParsing(false);
+    }
+  };
+
+  const handleSheetExecute = async () => {
+    if (!sheetParseResult?.new_rows?.length) return;
+    try {
+      const res = await api.post('/activity-sheets/execute', { rows: sheetParseResult.new_rows });
+      const { job_id, total } = res.data;
+      setSheetJob({ open: true, jobId: job_id, total, done: 0, failed: 0, status: 'running', rows: [] });
+      clearInterval(sheetJobPollRef.current);
+      sheetJobPollRef.current = setInterval(() => pollSheetJob(job_id), 2000);
+    } catch (err) {
+      toast.error('Failed to start sheet log', { description: err?.response?.data?.detail || err.message });
+    }
+  };
+
+  const pollSheetJob = async (jobId) => {
+    try {
+      const res = await api.get(`/activity-sheets/jobs/${jobId}`);
+      const d = res?.data?.data || res?.data;
+      setSheetJob((prev) => ({ ...prev, total: d.total, done: d.done, failed: d.failed, status: d.status, rows: Array.isArray(d.rows) ? d.rows : [] }));
+      if (d.status === 'complete') {
+        clearInterval(sheetJobPollRef.current);
+        sheetJobPollRef.current = null;
+        toast.success(`Sheet log complete — ${d.done} logged, ${d.failed} failed`);
+      }
+    } catch { /* silent retry */ }
+  };
+
+  const closeSheetJob = () => {
+    clearInterval(sheetJobPollRef.current);
+    sheetJobPollRef.current = null;
+    setSheetJob({ open: false, jobId: null, total: 0, done: 0, failed: 0, status: 'running', rows: [] });
+  };
+
+  // Cleanup both poll refs on unmount
+  useEffect(() => () => {
+    clearInterval(jobPollRef.current);
+    clearInterval(sheetJobPollRef.current);
+  }, []);
 
   // Duplicate MDM detection for preview warning
   const previewDuplicates = (() => {
@@ -465,12 +563,9 @@ export default function FileManagementPage() {
                   </div>
                   <div>
                     <label className="block text-xs text-[#9CA3AF] mb-1">Activity Type</label>
-                    <select value={ruleForm.activity_type}
-                      onChange={(e) => setRuleForm((p) => ({ ...p, activity_type: e.target.value }))}
-                      className="w-full h-9 px-3 bg-[#0f0f10] border border-[#1f2022] text-[#F2F3F5] text-sm focus:outline-none focus:border-[#FF4500] transition-colors appearance-none"
-                    >
-                      {ACTIVITY_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-                    </select>
+                    <div className="h-9 px-3 bg-[#0f0f10] border border-[#1f2022] flex items-center">
+                      <span className="text-[#F2F3F5] text-sm">Appointment · Customer Meeting</span>
+                    </div>
                   </div>
                   <div className="md:col-span-2">
                     <label className="block text-xs text-[#9CA3AF] mb-1">
@@ -535,12 +630,8 @@ export default function FileManagementPage() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-medium text-[#F2F3F5] truncate">{rule.name}</span>
-                    <Badge className={`rounded-none text-[10px] px-1.5 py-0 border hover:bg-inherit ${
-                      rule.activity_type === 'appointment' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
-                      : rule.activity_type === 'phonecall' ? 'bg-green-500/10 text-green-400 border-green-500/20'
-                      : 'bg-purple-500/10 text-purple-400 border-purple-500/20'
-                    }`}>
-                      {ACTIVITY_TYPES.find((t) => t.value === rule.activity_type)?.label || rule.activity_type}
+                    <Badge className="rounded-none text-[10px] px-1.5 py-0 border hover:bg-inherit bg-blue-500/10 text-blue-400 border-blue-500/20">
+                      Appointment
                     </Badge>
                   </div>
                   <p className="text-xs text-[#9CA3AF] mt-0.5 truncate">
@@ -568,6 +659,179 @@ export default function FileManagementPage() {
         )}
       </div>
 
+      {/* ─────────────────── Activity Sheet Log ───────────────────────────────── */}
+      <div className="mt-10">
+        <div className="flex items-center gap-2 mb-2">
+          <ClipboardList className="w-4 h-4 text-[#FF4500]" />
+          <h2 className="font-['Space_Grotesk'] text-base font-semibold text-[#F2F3F5]">Activity Sheet Log</h2>
+        </div>
+        <p className="text-[#9CA3AF] text-xs mb-4">
+          Paste or upload a table of meeting records to bulk-log them to D365 as appointments. Duplicate Serial Nos are skipped automatically.
+        </p>
+
+        <div className="bg-[#141416] border border-[#1f2022] p-5 space-y-4">
+          {/* Tabs */}
+          <div className="flex border-b border-[#1f2022]">
+            <button
+              onClick={() => { setSheetTab('paste'); setSheetParseResult(null); }}
+              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-medium transition-colors border-b-2 -mb-px ${
+                sheetTab === 'paste'
+                  ? 'border-[#FF4500] text-[#F2F3F5]'
+                  : 'border-transparent text-[#9CA3AF] hover:text-[#F2F3F5]'
+              }`}
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Paste Data
+            </button>
+            <button
+              onClick={() => { setSheetTab('upload'); setSheetParseResult(null); }}
+              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-medium transition-colors border-b-2 -mb-px ${
+                sheetTab === 'upload'
+                  ? 'border-[#FF4500] text-[#F2F3F5]'
+                  : 'border-transparent text-[#9CA3AF] hover:text-[#F2F3F5]'
+              }`}
+            >
+              <Upload className="w-3.5 h-3.5" />
+              Upload File
+            </button>
+          </div>
+
+          {/* Tab content */}
+          {sheetTab === 'paste' ? (
+            <textarea
+              value={sheetText}
+              onChange={(e) => { setSheetText(e.target.value); setSheetParseResult(null); }}
+              rows={6}
+              placeholder={`Paste your Excel data here (Ctrl+C from Excel, or markdown table)...\nSerial No  Date        Time      Regarding              Notes\n1          01-05-2026  11:00 AM  Neuland                Discussed endpoints and Lenovo portfolio`}
+              className="w-full px-3 py-2 bg-[#0f0f10] border border-[#1f2022] text-[#F2F3F5] text-xs font-mono placeholder-[#9CA3AF]/50 focus:outline-none focus:border-[#FF4500] transition-colors resize-none"
+            />
+          ) : (
+            <div>
+              <div
+                onDragOver={(e) => { e.preventDefault(); setSheetDragOver(true); }}
+                onDragLeave={() => setSheetDragOver(false)}
+                onDrop={handleSheetFileDrop}
+                onClick={() => sheetFileInputRef.current?.click()}
+                className={`relative bg-[#0f0f10] border-2 border-dashed p-6 flex flex-col items-center gap-2 cursor-pointer transition-colors ${
+                  sheetDragOver ? 'border-[#FF4500] bg-[#FF4500]/5' : 'border-[#1f2022] hover:border-[#FF4500]/40'
+                }`}
+              >
+                <input ref={sheetFileInputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleSheetFileInput} />
+                <Upload className="w-6 h-6 text-[#9CA3AF]" />
+                <div className="text-center">
+                  {sheetFile ? (
+                    <p className="text-[#F2F3F5] text-xs font-medium">{sheetFile.name}</p>
+                  ) : (
+                    <>
+                      <p className="text-[#F2F3F5] text-xs font-medium">Drop your activity sheet here or click to browse</p>
+                      <p className="text-[#9CA3AF] text-[10px] mt-0.5">.xlsx, .xls, .csv</p>
+                    </>
+                  )}
+                </div>
+                {sheetFile && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setSheetFile(null); setSheetParseResult(null); }}
+                    className="absolute top-2 right-2 w-5 h-5 flex items-center justify-center text-[#9CA3AF] hover:text-[#ef4444] transition-colors"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Parse button */}
+          <button
+            onClick={handleSheetParse}
+            disabled={sheetParsing || (sheetTab === 'paste' ? !sheetText.trim() : !sheetFile)}
+            className="flex items-center gap-2 h-9 px-5 bg-[#1f2022] hover:bg-[#2a2b2d] text-[#F2F3F5] text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {sheetParsing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+            {sheetParsing ? 'Parsing…' : 'Parse & Preview'}
+          </button>
+
+          {/* Parse result preview */}
+          {sheetParseResult && (
+            <div className="space-y-3">
+              {/* Counts */}
+              <div className="flex items-center gap-3 text-xs">
+                <span className="text-[#9CA3AF]">
+                  <span className="text-[#F2F3F5] font-medium">{sheetParseResult.total_new ?? sheetParseResult.new_rows?.length ?? 0}</span> new records
+                  {' · '}
+                  <span className="text-[#9CA3AF]">{sheetParseResult.total_duplicate ?? sheetParseResult.duplicate_rows?.length ?? 0} already logged</span>
+                </span>
+              </div>
+
+              {/* All-duplicate info box */}
+              {(sheetParseResult.total_new ?? sheetParseResult.new_rows?.length ?? 0) === 0 && (
+                <div className="flex items-start gap-2 p-3 bg-blue-500/5 border border-blue-500/20 text-xs text-blue-400">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>All serial numbers have already been logged.</span>
+                </div>
+              )}
+
+              {/* Preview table */}
+              {(() => {
+                const allRows = [
+                  ...(sheetParseResult.new_rows || []).map((r) => ({ ...r, _status: 'new' })),
+                  ...(sheetParseResult.duplicate_rows || []).map((r) => ({ ...r, _status: 'duplicate' })),
+                ].sort((a, b) => (Number(a.serial_no) || 0) - (Number(b.serial_no) || 0));
+                if (allRows.length === 0) return null;
+                return (
+                  <div className="border border-[#1f2022] overflow-hidden">
+                    <div className="max-h-64 overflow-y-auto">
+                      <table className="w-full text-xs">
+                        <thead className="sticky top-0 bg-[#141416]">
+                          <tr className="border-b border-[#1f2022]">
+                            <th className="px-3 py-2 text-left text-[#9CA3AF] font-medium w-16">Serial No</th>
+                            <th className="px-3 py-2 text-left text-[#9CA3AF] font-medium w-24">Date</th>
+                            <th className="px-3 py-2 text-left text-[#9CA3AF] font-medium w-20">Time</th>
+                            <th className="px-3 py-2 text-left text-[#9CA3AF] font-medium">Regarding</th>
+                            <th className="px-3 py-2 text-left text-[#9CA3AF] font-medium hidden md:table-cell">Notes</th>
+                            <th className="px-3 py-2 text-left text-[#9CA3AF] font-medium w-28">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {allRows.map((row, i) => (
+                            <tr key={i} className="border-b border-[#1f2022]/40 last:border-0">
+                              <td className="px-3 py-1.5 text-[#9CA3AF] font-mono">{row.serial_no ?? '—'}</td>
+                              <td className="px-3 py-1.5 text-[#F2F3F5]">{row.date ?? '—'}</td>
+                              <td className="px-3 py-1.5 text-[#9CA3AF]">{row.time ?? '—'}</td>
+                              <td className="px-3 py-1.5 text-[#F2F3F5]">{row.regarding ?? '—'}</td>
+                              <td className="px-3 py-1.5 text-[#9CA3AF] hidden md:table-cell">
+                                {row.notes ? (row.notes.length > 60 ? `${row.notes.slice(0, 60)}…` : row.notes) : '—'}
+                              </td>
+                              <td className="px-3 py-1.5">
+                                {row._status === 'new' ? (
+                                  <span className="bg-green-500/10 text-green-400 border border-green-500/20 rounded-none text-[10px] px-1.5 py-0.5 inline-block">New</span>
+                                ) : (
+                                  <span className="bg-[#1f2022] text-[#9CA3AF] border border-[#1f2022] rounded-none text-[10px] px-1.5 py-0.5 inline-block">Already Logged</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Execute button */}
+              <button
+                onClick={handleSheetExecute}
+                disabled={(sheetParseResult.total_new ?? sheetParseResult.new_rows?.length ?? 0) === 0}
+                className="flex items-center gap-2 h-9 px-5 bg-[#FF4500] hover:bg-[#FF4500]/80 text-white text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Play className="w-3.5 h-3.5" />
+                Log {sheetParseResult.total_new ?? sheetParseResult.new_rows?.length ?? 0} Records to D365
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* How it works */}
       <div className="mt-8 bg-[#141416] border border-[#1f2022] p-5">
         <div className="flex items-center gap-2 mb-3">
@@ -580,6 +844,7 @@ export default function FileManagementPage() {
           <li>• Click any file row to expand and preview or search the accounts inside it.</li>
           <li>• <strong className="text-[#F2F3F5]">Automation Rules</strong> — create a rule, preview which accounts will be logged, then hit Run to bulk-log to D365 in the background.</li>
           <li>• MDM IDs starting with <strong className="text-[#FF4500]">PA0</strong> are highlighted in previews. Duplicate MDM IDs trigger a conflict warning before running.</li>
+          <li>• <strong className="text-[#F2F3F5]">Activity Sheet Log</strong> — paste or upload a meeting table, preview new vs already-logged rows, then log new records to D365.</li>
         </ul>
       </div>
 
@@ -656,7 +921,7 @@ export default function FileManagementPage() {
               </div>
 
               <div className="flex items-center justify-between px-5 py-3 border-t border-[#1f2022]">
-                <span className="text-xs text-[#9CA3AF]">{preview.rows.length} accounts · {preview.rule?.activity_type}</span>
+                <span className="text-xs text-[#9CA3AF]">{preview.rows.length} accounts · Appointment</span>
                 <div className="flex gap-2">
                   <button onClick={() => setPreview((p) => ({ ...p, open: false }))}
                     className="h-8 px-4 text-xs text-[#9CA3AF] border border-[#1f2022] hover:border-[#9CA3AF] transition-colors">
@@ -675,7 +940,7 @@ export default function FileManagementPage() {
         )}
       </AnimatePresence>
 
-      {/* ── Job Progress Modal ───────────────────────────────────────────────── */}
+      {/* ── Rules Job Progress Modal ─────────────────────────────────────────── */}
       <AnimatePresence>
         {job.open && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
@@ -735,6 +1000,117 @@ export default function FileManagementPage() {
 
                 {job.status === 'complete' && (
                   <button onClick={closeJob}
+                    className="h-8 px-4 text-xs text-white bg-[#FF4500] hover:bg-[#FF4500]/80 transition-colors">
+                    Done
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Delete File Confirmation ─────────────────────────────────────────── */}
+      <AlertDialog open={!!deleteFileTarget} onOpenChange={(o) => !o && setDeleteFileTarget(null)}>
+        <AlertDialogContent className="bg-[#141416] border border-[#1f2022] text-[#F2F3F5] rounded-none">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="font-['Space_Grotesk'] text-[#F2F3F5]">Delete file?</AlertDialogTitle>
+            <AlertDialogDescription className="text-[#9CA3AF]">
+              <strong className="text-[#F2F3F5]">{deleteFileTarget?.filename}</strong> and all its imported accounts will be permanently removed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="bg-transparent border-[#1f2022] text-[#9CA3AF] hover:bg-[#1f2022] rounded-none">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDeleteFile} className="bg-[#ef4444] hover:bg-[#dc2626] text-white rounded-none border-0">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ── Delete Rule Confirmation ──────────────────────────────────────────── */}
+      <AlertDialog open={!!deleteRuleTarget} onOpenChange={(o) => !o && setDeleteRuleTarget(null)}>
+        <AlertDialogContent className="bg-[#141416] border border-[#1f2022] text-[#F2F3F5] rounded-none">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="font-['Space_Grotesk'] text-[#F2F3F5]">Delete rule?</AlertDialogTitle>
+            <AlertDialogDescription className="text-[#9CA3AF]">
+              <strong className="text-[#F2F3F5]">{deleteRuleTarget?.ruleName}</strong> will be permanently removed and cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="bg-transparent border-[#1f2022] text-[#9CA3AF] hover:bg-[#1f2022] rounded-none">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDeleteRule} className="bg-[#ef4444] hover:bg-[#dc2626] text-white rounded-none border-0">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* ── Sheet Job Progress Modal ─────────────────────────────────────────── */}
+      <AnimatePresence>
+        {sheetJob.open && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+          >
+            <motion.div
+              initial={{ y: 40, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 40, opacity: 0 }} transition={{ duration: 0.2 }}
+              className="bg-[#141416] border border-[#1f2022] w-full max-w-xl"
+            >
+              <div className="flex items-center justify-between px-5 py-4 border-b border-[#1f2022]">
+                <div className="flex items-center gap-2">
+                  {sheetJob.status === 'running'
+                    ? <Loader2 className="w-4 h-4 text-[#FF4500] animate-spin" />
+                    : <CheckCircle2 className="w-4 h-4 text-[#22c55e]" />}
+                  <p className="font-['Space_Grotesk'] text-sm font-semibold text-[#F2F3F5]">
+                    {sheetJob.status === 'running' ? 'Logging Sheet Records…' : 'Sheet Log Complete'}
+                  </p>
+                </div>
+                {sheetJob.status === 'complete' && (
+                  <button onClick={closeSheetJob}
+                    className="w-7 h-7 flex items-center justify-center text-[#9CA3AF] hover:text-[#F2F3F5] transition-colors">
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+
+              <div className="px-5 py-4 space-y-4">
+                <div>
+                  <div className="flex justify-between text-xs text-[#9CA3AF] mb-1.5">
+                    <span>{sheetJob.done} of {sheetJob.total} done</span>
+                    {sheetJob.failed > 0 && <span className="text-[#ef4444]">{sheetJob.failed} failed</span>}
+                  </div>
+                  <div className="h-1.5 bg-[#1f2022] overflow-hidden">
+                    <motion.div className="h-full bg-[#FF4500]"
+                      animate={{ width: `${sheetJob.total ? (sheetJob.done / sheetJob.total) * 100 : 0}%` }}
+                      transition={{ duration: 0.4 }}
+                    />
+                  </div>
+                </div>
+
+                {sheetJob.rows.filter((r) => r.status !== 'pending').length > 0 && (
+                  <div className="max-h-48 overflow-y-auto space-y-0.5">
+                    {sheetJob.rows.filter((r) => r.status !== 'pending').slice(-20).map((row, i) => (
+                      <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-[#1f2022]/30 last:border-0">
+                        <span className="text-[#9CA3AF] font-mono shrink-0 w-12">{row.serial_no ?? '—'}</span>
+                        <span className="text-[#9CA3AF] truncate flex-1 mx-2">{row.regarding || '—'}</span>
+                        <span className={`shrink-0 ${
+                          row.status === 'success' ? 'text-[#22c55e]' :
+                          row.status === 'failed'  ? 'text-[#ef4444]' : 'text-[#9CA3AF]'
+                        }`}>
+                          {row.status === 'success' ? 'Logged' : row.status === 'failed' ? 'Failed' : 'Pending'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {sheetJob.status === 'complete' && (
+                  <button onClick={closeSheetJob}
                     className="h-8 px-4 text-xs text-white bg-[#FF4500] hover:bg-[#FF4500]/80 transition-colors">
                     Done
                   </button>

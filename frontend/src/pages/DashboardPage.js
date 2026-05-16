@@ -287,7 +287,6 @@ export default function DashboardPage() {
       {/* ── D365 Activity Logger Dialog ─────────────────────────────────────── */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent
-          data-testid="d365-logger-dialog"
           className="bg-[#141416] border border-[#1f2022] text-[#F2F3F5] max-w-[620px] rounded-none p-0 gap-0"
         >
           <DialogHeader className="px-6 pt-6 pb-4 border-b border-[#1f2022]">
@@ -315,7 +314,6 @@ export default function DashboardPage() {
                 </Label>
                 <Input
                   {...register('subject')}
-                  data-testid="input-subject"
                   placeholder="e.g. QBR with Acme Corp — Q1 Review"
                   className={INPUT_CLS}
                 />
@@ -328,7 +326,6 @@ export default function DashboardPage() {
                   <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Activity Type</Label>
                   <Select onValueChange={(v) => setValue('activity_type', v)} defaultValue="appointment">
                     <SelectTrigger
-                      data-testid="select-activity-type"
                       className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] rounded-none h-9 text-sm focus:ring-[#FF4500] focus:border-[#FF4500]"
                     >
                       <SelectValue />
@@ -408,7 +405,6 @@ export default function DashboardPage() {
                     defaultValue="30"
                   >
                     <SelectTrigger
-                      data-testid="select-duration"
                       className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] rounded-none h-9 text-sm focus:ring-[#FF4500] focus:border-[#FF4500]"
                     >
                       <SelectValue />
@@ -513,7 +509,6 @@ export default function DashboardPage() {
               </Label>
               <Textarea
                 {...register('notes')}
-                data-testid="input-notes"
                 placeholder="Key discussion points, next steps, action items..."
                 rows={3}
                 className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] placeholder:text-[#9CA3AF]/60 rounded-none text-sm resize-none focus-visible:ring-[#FF4500] focus-visible:border-[#FF4500]"
@@ -533,7 +528,6 @@ export default function DashboardPage() {
               </Button>
               <Button
                 type="submit"
-                data-testid="btn-submit-activity"
                 size="sm"
                 disabled={submitting}
                 className="bg-[#FF4500] hover:bg-[#e63e00] text-white rounded-none text-xs h-8 px-4 transition-colors disabled:opacity-60"

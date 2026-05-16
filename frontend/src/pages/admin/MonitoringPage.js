@@ -117,7 +117,6 @@ export default function MonitoringPage() {
             </span>
           )}
           <Button
-            data-testid="btn-refresh-monitoring"
             onClick={refresh}
             variant="outline"
             size="sm"

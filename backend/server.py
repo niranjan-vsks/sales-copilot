@@ -1,17 +1,20 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, UploadFile, File  # noqa: F401
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, UploadFile, File, Query  # noqa: F401
 from fastapi.responses import RedirectResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo.errors import ServerSelectionTimeoutError, PyMongoError
+from pymongo.errors import ServerSelectionTimeoutError, PyMongoError, OperationFailure
 import os
 import re
 import logging
 import secrets
 import bcrypt
 from pathlib import Path
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Optional, Dict, Any, List
 import uuid
 import asyncio
@@ -26,7 +29,7 @@ from microsoft_auth import get_auth_url, handle_callback, get_access_token, get_
 from n8n_client import trigger_workflow
 from ai_chat import process_message
 from d365_client import D365Client
-from excel_processor import parse_file, detect_account_columns
+from excel_processor import parse_file, detect_account_columns, fuzzy_match as _fuzzy_match
 from knowledge_base import KnowledgeBaseService
 
 ROOT_DIR = Path(__file__).parent
@@ -40,6 +43,9 @@ db = _mongo_client[os.environ.get('DB_NAME', 'sales_copilot')]
 kb = KnowledgeBaseService(db)
 
 app = FastAPI(title="Sales Copilot API")
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 api_router = APIRouter(prefix="/api")
 
 logger = logging.getLogger(__name__)
@@ -94,7 +100,7 @@ class WorkflowExecuteRequest(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = Field(..., max_length=4000)
 
 
 class TeamMemberRequest(BaseModel):
@@ -102,6 +108,13 @@ class TeamMemberRequest(BaseModel):
     display_name: str
     role: str = "rep"
     password: Optional[str] = None
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
 
 
 class LoginRequest(BaseModel):
@@ -143,6 +156,8 @@ async def get_current_user(request: Request) -> Optional[User]:
             return None
 
         expires_at = session_doc.get("expires_at")
+        if not expires_at:
+            raise HTTPException(status_code=401, detail="Session invalid")
         if isinstance(expires_at, str):
             expires_at = datetime.fromisoformat(expires_at)
         if expires_at.tzinfo is None:
@@ -299,63 +314,9 @@ async def logout(request: Request, response: Response):
     return {"ok": True}
 
 
-# ── Dev / Demo Login ─────────────────────────────────────────────
-@api_router.get("/auth/dev-login/check")
-async def dev_login_check():
-    enabled = os.getenv("DEV_LOGIN_ENABLED", "false").lower() == "true"
-    return {"success": True, "data": {"enabled": enabled}, "error": None}
-
-
-class DevLoginRequest(BaseModel):
-    username: str
-    password: str
-
-
-@api_router.post("/auth/dev-login")
-async def dev_login(body: DevLoginRequest):
-    if os.getenv("DEV_LOGIN_ENABLED", "false").lower() != "true":
-        raise HTTPException(status_code=404, detail="Not found")
-
-    expected_user = os.getenv("DEV_LOGIN_USER", "")
-    expected_pass = os.getenv("DEV_LOGIN_PASS", "")
-
-    if not expected_user or not expected_pass:
-        raise HTTPException(status_code=503, detail="Dev login not configured")
-
-    if body.username != expected_user or body.password != expected_pass:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    session_token = secrets.token_hex(32)
-    await db.users.update_one(
-        {"user_id": "dev-user"},
-        {"$set": {
-            "user_id": "dev-user",
-            "email": "demo@moltbot.dev",
-            "name": "Demo User",
-            "role": "admin",
-            "created_at": datetime.now(timezone.utc),
-        }},
-        upsert=True,
-    )
-    await db.user_sessions.update_one(
-        {"user_id": "dev-user"},
-        {"$set": {
-            "user_id": "dev-user",
-            "session_token": session_token,
-            "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
-            "created_at": datetime.now(timezone.utc),
-        }},
-        upsert=True,
-    )
-
-    resp = JSONResponse({"success": True, "data": {"name": "Demo User"}, "error": None})
-    cookie_opts = _cookie_sec()
-    resp.set_cookie("session_token", session_token, path="/", max_age=604800, **cookie_opts)
-    return resp
-
-
+@limiter.limit("10/minute")
 @api_router.post("/auth/login")
-async def login(body: LoginRequest):
+async def login(request: Request, body: LoginRequest):
     """Per-user email+password login. Password must have been set when team member was added."""
     email = body.email.lower().strip()
     auth_user = await db.authorized_users.find_one({"email": email})
@@ -417,10 +378,32 @@ async def token_for_n8n(request: Request):
 
 # ============== D365 Activity Helper ==============
 
+async def _safe_task(coro, collection: str, job_id: str) -> None:
+    """Wrap a background coroutine so crashes mark the job failed instead of silently dying."""
+    try:
+        await coro
+    except Exception as exc:
+        logger.error("Background job %s crashed: %s", job_id, exc, exc_info=True)
+        try:
+            await getattr(db, collection).update_one(
+                {"id": job_id}, {"$set": {"status": "failed", "error": str(exc)}}
+            )
+        except Exception:
+            pass
+
+
+_ENTITY_TO_TYPE = {
+    "appointments": "appointment",
+    "phonecalls": "phonecall",
+    "tasks": "task",
+    "emails": "email",
+}
+
+
 def _build_record_url(entity_set: str, record_id: str) -> Optional[str]:
     if not record_id or not D365_ORG_URL:
         return None
-    entity_name = entity_set.rstrip("s")  # phonecalls → phonecall
+    entity_name = _ENTITY_TO_TYPE.get(entity_set, entity_set.rstrip("s"))
     return f"{D365_ORG_URL}/main.aspx?etn={entity_name}&id={record_id}&pagetype=entityrecord"
 
 
@@ -645,19 +628,19 @@ async def execute_workflow(body: WorkflowExecuteRequest, request: Request):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Workflow execution error: {e}")
+        logger.error(f"Workflow execution error: {e}", exc_info=True)
         await db.workflow_executions.update_one(
             {"id": execution_id},
             {"$set": {"status": "failed", "error_message": str(e)}},
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Workflow execution failed. Please try again.")
 
 
 @api_router.get("/workflows/executions")
 async def get_executions(
     request: Request,
-    page: int = 1,
-    limit: int = 20,
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
     workflow_id: Optional[str] = None,
     status: Optional[str] = None
 ):
@@ -687,8 +670,9 @@ async def get_executions(
 
 # ============== Chat Routes ==============
 
+@limiter.limit("30/minute")
 @api_router.post("/chat")
-async def chat(body: ChatRequest, request: Request):
+async def chat(request: Request, body: ChatRequest):
     user = await require_auth(request)
 
     # Fetch last 10 messages for conversational memory
@@ -729,62 +713,83 @@ async def chat(body: ChatRequest, request: Request):
     workflow_type = ai_response.get("workflow_type")
 
     if action == "trigger_workflow" and workflow_type and not ai_response.get("clarification_needed"):
-        params = {**ai_response.get("payload", {}), "activity_type": workflow_type}
 
-        # Look up MDM ID for the account so the PA webhook can link Regarding correctly
-        account_name = params.get("account", "")
-        if account_name and not params.get("mdm_id"):
-            default_file = await db.uploaded_files.find_one(
-                {"user_id": user.user_id, "is_default": True}, {"file_id": 1}
-            )
-            if default_file:
-                escaped = re.escape(account_name)
-                acc_doc = await db.user_account_data.find_one(
-                    {
-                        "user_id": user.user_id,
-                        "file_id": default_file["file_id"],
-                        "account_name": {"$regex": f"^{escaped}$", "$options": "i"},
-                    },
-                    {"l2_mdm_id_idg": 1, "_id": 0},
+        # Activity Sheet bulk logging — handle separately
+        if workflow_type == "activity_sheet":
+            rows = ai_response.get("payload", {}).get("rows", [])
+            if rows:
+                job_id = str(uuid.uuid4())
+                initial_rows = [
+                    {"serial_no": r.get("serial_no", ""), "regarding": r.get("regarding", ""), "status": "pending"}
+                    for r in rows
+                ]
+                await db.activity_sheet_jobs.insert_one({
+                    "id": job_id, "user_id": user.user_id, "total": len(rows),
+                    "done": 0, "failed": 0, "status": "running",
+                    "rows": initial_rows, "created_at": datetime.now(timezone.utc),
+                })
+                asyncio.create_task(_safe_task(_run_activity_sheet_job(job_id, user, rows), "activity_sheet_jobs", job_id))
+                workflow_result = {"status": "running", "job_id": job_id, "total": len(rows)}
+            else:
+                workflow_result = {"status": "failed", "error": "No rows found in activity sheet payload"}
+
+        else:
+            params = {**ai_response.get("payload", {}), "activity_type": "appointment",
+                      "activity_sub_type": "Customer Meeting"}
+
+            # Look up MDM ID for the account so the PA webhook can link Regarding correctly
+            account_name = params.get("account", "")
+            if account_name and not params.get("mdm_id"):
+                default_file = await db.uploaded_files.find_one(
+                    {"user_id": user.user_id, "is_default": True}, {"file_id": 1}
                 )
-                if not acc_doc:
+                if default_file:
+                    escaped = re.escape(account_name)
                     acc_doc = await db.user_account_data.find_one(
                         {
                             "user_id": user.user_id,
                             "file_id": default_file["file_id"],
-                            "account_name": {"$regex": escaped, "$options": "i"},
+                            "account_name": {"$regex": f"^{escaped}$", "$options": "i"},
                         },
                         {"l2_mdm_id_idg": 1, "_id": 0},
                     )
-                if acc_doc and acc_doc.get("l2_mdm_id_idg"):
-                    params["mdm_id"] = acc_doc["l2_mdm_id_idg"]
+                    if not acc_doc:
+                        acc_doc = await db.user_account_data.find_one(
+                            {
+                                "user_id": user.user_id,
+                                "file_id": default_file["file_id"],
+                                "account_name": {"$regex": escaped, "$options": "i"},
+                            },
+                            {"l2_mdm_id_idg": 1, "_id": 0},
+                        )
+                    if acc_doc and acc_doc.get("l2_mdm_id_idg"):
+                        params["mdm_id"] = acc_doc["l2_mdm_id_idg"]
 
-        try:
-            workflow_result = await _execute_d365_activity(user, params)
-            # Log to knowledge base
-            account = params.get("account", "")
-            subject = params.get("subject", "")
-            kb.fire(
-                user_id=user.user_id,
-                event_type="d365_activity_created",
-                event_summary=(
-                    f"{workflow_type.capitalize()} logged for {account}: \"{subject}\" "
-                    f"[{workflow_result.get('status', 'unknown')}] via AI chat on "
-                    f"{datetime.now(timezone.utc).strftime('%B %d')}"
-                ),
-                metadata={
-                    "activity_type": workflow_type,
-                    "account": account,
-                    "subject": subject,
-                    "status": workflow_result.get("status"),
-                    "record_id": workflow_result.get("d365_record_id", ""),
-                    "record_url": workflow_result.get("record_url", ""),
-                    "source": "chat",
-                },
-            )
-        except Exception as e:
-            logger.warning(f"Chat workflow trigger failed: {e}")
-            workflow_result = {"status": "failed", "error": str(e)}
+            try:
+                workflow_result = await _execute_d365_activity(user, params)
+                account = params.get("account", "")
+                subject = params.get("subject", "")
+                kb.fire(
+                    user_id=user.user_id,
+                    event_type="d365_activity_created",
+                    event_summary=(
+                        f"Appointment logged for {account}: \"{subject}\" "
+                        f"[{workflow_result.get('status', 'unknown')}] via AI chat on "
+                        f"{datetime.now(timezone.utc).strftime('%B %d')}"
+                    ),
+                    metadata={
+                        "activity_type": "appointment",
+                        "account": account,
+                        "subject": subject,
+                        "status": workflow_result.get("status"),
+                        "record_id": workflow_result.get("d365_record_id", ""),
+                        "record_url": workflow_result.get("record_url", ""),
+                        "source": "chat",
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"Chat workflow trigger failed: {e}")
+                workflow_result = {"status": "failed", "error": str(e)}
 
     # Store assistant message
     await db.chat_history.insert_one({
@@ -846,19 +851,11 @@ async def test_d365_connection(request: Request):
         return {"connected": False, "error_message": str(e)}
 
 
-_ENTITY_TO_TYPE = {
-    "phonecalls": "phonecall",
-    "tasks": "task",
-    "emails": "email",
-    "appointments": "appointment",
-}
-
-
 @api_router.get("/d365/activities")
 async def get_d365_activities(
     request: Request,
     entity_set: str = "phonecalls",
-    top: int = 50
+    top: int = Query(default=50, ge=1, le=200),
 ):
     user = await require_auth(request)
     try:
@@ -964,7 +961,7 @@ async def save_browser_cookies(body: BrowserCookiesRequest, request: Request):
 @api_router.get("/team")
 async def get_team(request: Request):
     await require_admin(request)
-    members = await db.authorized_users.find({}, {"_id": 0}).to_list(200)
+    members = await db.authorized_users.find({}, {"_id": 0, "password_hash": 0}).to_list(200)
     for m in members:
         if isinstance(m.get("added_at"), datetime):
             m["added_at"] = m["added_at"].isoformat()
@@ -1094,15 +1091,30 @@ class AccountImportRequest(BaseModel):
 
 class RuleCreateRequest(BaseModel):
     name: str
-    activity_type: str = "phonecall"
-    subject_template: str
+    subject_template: str = Field(..., max_length=200)
     duration_minutes: int = 30
-    notes_template: Optional[str] = ""
+    notes_template: Optional[str] = Field(default="", max_length=500)
     account_filter: str = "all"  # "all" or comma-separated account_ids
+    # activity_type is always "appointment" — not exposed to callers
 
 
 class BatchExecuteRequest(BaseModel):
     account_ids: Optional[List[str]] = None  # None = use rule's filter; list = run only these
+
+
+class ActivitySheetParseRequest(BaseModel):
+    text: str
+
+
+class ActivitySheetExecuteRequest(BaseModel):
+    rows: List[Dict[str, Any]]
+
+    @field_validator('rows')
+    @classmethod
+    def cap_rows(cls, v):
+        if len(v) > 500:
+            raise ValueError('Cannot execute more than 500 rows at once')
+        return v
 
 
 @api_router.post("/excel/upload")
@@ -1111,7 +1123,10 @@ async def excel_upload(request: Request, file: UploadFile = File(...)):
     fname = file.filename or ""
     if not fname.lower().endswith((".xlsx", ".xls", ".csv")):
         raise HTTPException(status_code=400, detail="Only .xlsx or .csv files are supported")
-    contents = await file.read()
+    _MAX_UPLOAD = 10 * 1024 * 1024  # 10 MB
+    contents = await file.read(_MAX_UPLOAD + 1)
+    if len(contents) > _MAX_UPLOAD:
+        raise HTTPException(status_code=413, detail="File too large. Maximum upload size is 10 MB.")
     try:
         rows, columns = parse_file(contents, fname)
     except Exception as e:
@@ -1168,13 +1183,14 @@ async def excel_accounts_import(body: AccountImportRequest, request: Request):
 
 
 @api_router.get("/excel/accounts")
-async def excel_accounts_list(request: Request, search: str = "", limit: int = 50):
+async def excel_accounts_list(request: Request, search: str = "", limit: int = Query(default=50, ge=1, le=200)):
     await require_auth(request)
     query = {}
     if search:
+        escaped = re.escape(search)
         query = {"$or": [
-            {"name": {"$regex": search, "$options": "i"}},
-            {"account_id": {"$regex": search, "$options": "i"}},
+            {"name": {"$regex": escaped, "$options": "i"}},
+            {"account_id": {"$regex": escaped, "$options": "i"}},
         ]}
     docs = await db.accounts.find(query, {"_id": 0}).limit(limit).to_list(limit)
     return {"success": True, "data": {"accounts": docs}, "error": None}
@@ -1199,7 +1215,8 @@ async def create_rule(body: RuleCreateRequest, request: Request):
         "id": str(uuid.uuid4()),
         "user_id": user.user_id,
         "name": body.name,
-        "activity_type": body.activity_type,
+        "activity_type": "appointment",
+        "activity_sub_type": "Customer Meeting",
         "subject_template": body.subject_template,
         "duration_minutes": body.duration_minutes,
         "notes_template": body.notes_template or "",
@@ -1282,7 +1299,8 @@ async def _run_batch_job(job_id: str, user: "User", rule: Dict[str, Any], accoun
         name   = account.get("name", "")
         mdm_id = account.get("mdm_id", account.get("account_id", ""))
         params = {
-            "activity_type": rule.get("activity_type", "appointment"),
+            "activity_type": "appointment",
+            "activity_sub_type": "Customer Meeting",
             "subject": template.replace("{name}", name),
             "account": name,
             "mdm_id": mdm_id,
@@ -1348,7 +1366,7 @@ async def execute_rule(rule_id: str, body: BatchExecuteRequest, request: Request
         "created_at": datetime.now(timezone.utc),
     })
 
-    asyncio.create_task(_run_batch_job(job_id, user, rule, accounts))
+    asyncio.create_task(_safe_task(_run_batch_job(job_id, user, rule, accounts), "batch_jobs", job_id))
     return {"success": True, "data": {"job_id": job_id, "total": len(accounts)}, "error": None}
 
 
@@ -1376,7 +1394,10 @@ async def upload_accounts_file(request: Request, file: UploadFile = File(...)):
     if not fname.lower().endswith((".xlsx", ".xls", ".csv")):
         raise HTTPException(status_code=400, detail="Only .xlsx or .csv files are supported")
 
-    contents = await file.read()
+    _MAX_UPLOAD = 10 * 1024 * 1024  # 10 MB
+    contents = await file.read(_MAX_UPLOAD + 1)
+    if len(contents) > _MAX_UPLOAD:
+        raise HTTPException(status_code=413, detail="File too large. Maximum upload size is 10 MB.")
     try:
         rows, columns = parse_file(contents, fname)
     except Exception as e:
@@ -1489,7 +1510,7 @@ async def delete_uploaded_file(file_id: str, request: Request):
 
 
 @api_router.get("/files/{file_id}/accounts")
-async def get_file_accounts(file_id: str, request: Request, q: str = "", limit: int = 100):
+async def get_file_accounts(file_id: str, request: Request, q: str = "", limit: int = Query(default=100, ge=1, le=500)):
     """Return accounts stored for a specific uploaded file, with optional search."""
     user = await require_auth(request)
     doc = await db.uploaded_files.find_one({"file_id": file_id, "user_id": user.user_id})
@@ -1497,9 +1518,10 @@ async def get_file_accounts(file_id: str, request: Request, q: str = "", limit: 
         raise HTTPException(status_code=404, detail="File not found")
     query: Dict[str, Any] = {"user_id": user.user_id, "file_id": file_id}
     if q:
+        escaped_q = re.escape(q)
         query["$or"] = [
-            {"account_name": {"$regex": q, "$options": "i"}},
-            {"l2_mdm_id_idg": {"$regex": q, "$options": "i"}},
+            {"account_name": {"$regex": escaped_q, "$options": "i"}},
+            {"l2_mdm_id_idg": {"$regex": escaped_q, "$options": "i"}},
         ]
     docs = await db.user_account_data.find(
         query,
@@ -1511,7 +1533,7 @@ async def get_file_accounts(file_id: str, request: Request, q: str = "", limit: 
 # ============== Account Search Routes ==============
 
 @api_router.get("/accounts/search")
-async def search_accounts(request: Request, q: str = "", limit: int = 10):
+async def search_accounts(request: Request, q: str = "", limit: int = Query(default=10, ge=1, le=50)):
     """Search accounts by name OR MDM ID. Searches user_account_data (new flow) first,
     falls back to legacy accounts collection (ExcelPage import flow)."""
     user = await require_auth(request)
@@ -1523,9 +1545,10 @@ async def search_accounts(request: Request, q: str = "", limit: int = 10):
     if default_file:
         query: Dict[str, Any] = {"user_id": user.user_id, "file_id": default_file["file_id"]}
         if q:
+            escaped_q = re.escape(q)
             query["$or"] = [
-                {"account_name": {"$regex": q, "$options": "i"}},
-                {"l2_mdm_id_idg": {"$regex": q, "$options": "i"}},
+                {"account_name": {"$regex": escaped_q, "$options": "i"}},
+                {"l2_mdm_id_idg": {"$regex": escaped_q, "$options": "i"}},
             ]
         docs = await db.user_account_data.find(
             query,
@@ -1537,9 +1560,10 @@ async def search_accounts(request: Request, q: str = "", limit: int = 10):
     # Fall back to legacy accounts collection (/api/excel/accounts/import flow)
     legacy_query: Dict[str, Any] = {}
     if q:
+        escaped_q = re.escape(q)
         legacy_query = {"$or": [
-            {"name": {"$regex": q, "$options": "i"}},
-            {"account_id": {"$regex": q, "$options": "i"}},
+            {"name": {"$regex": escaped_q, "$options": "i"}},
+            {"account_id": {"$regex": escaped_q, "$options": "i"}},
         ]}
     legacy = await db.accounts.find(legacy_query, {"_id": 0, "name": 1, "account_id": 1}).limit(limit).to_list(limit)
     results = [
@@ -1549,22 +1573,270 @@ async def search_accounts(request: Request, q: str = "", limit: int = 10):
     return {"success": True, "data": {"results": results}, "error": None}
 
 
+# ============== Activity Sheet Routes ==============
+
+from activity_sheet_processor import (  # noqa: E402
+    parse_text as _sheet_parse_text,
+    map_columns as _sheet_map_columns,
+    normalize_rows as _sheet_normalize_rows,
+    combine_datetime as _sheet_combine_datetime,
+    summarize_notes as _sheet_summarize_notes,
+)
+
+
+@api_router.post("/activity-sheets/parse-text")
+async def parse_activity_sheet_text(body: ActivitySheetParseRequest, request: Request):
+    """Parse pasted text (TSV / CSV / markdown table) into activity rows, flagging duplicates."""
+    user = await require_auth(request)
+    headers, raw_rows = _sheet_parse_text(body.text)
+    if not raw_rows:
+        raise HTTPException(status_code=422, detail="No rows detected. Paste tab-separated, CSV, or markdown-table data.")
+
+    col_mapping = _sheet_map_columns(headers)
+    if "serial_no" not in col_mapping:
+        raise HTTPException(status_code=422, detail="Could not detect a Serial No column (expected: Serial No, Sno, S.No, ID).")
+    if "regarding" not in col_mapping:
+        raise HTTPException(status_code=422, detail="Could not detect a Regarding / Account column.")
+
+    rows = _sheet_normalize_rows(raw_rows, col_mapping)
+    return await _classify_rows(user.user_id, rows, col_mapping)
+
+
+@api_router.post("/activity-sheets/parse-file")
+async def parse_activity_sheet_file(request: Request, file: UploadFile = File(...)):
+    """Parse uploaded Excel/CSV activity sheet, flagging already-logged serial numbers."""
+    user = await require_auth(request)
+    fname = file.filename or ""
+    if not fname.lower().endswith((".xlsx", ".xls", ".csv")):
+        raise HTTPException(status_code=400, detail="Only .xlsx, .xls, or .csv files are supported.")
+
+    _MAX_UPLOAD = 10 * 1024 * 1024  # 10 MB
+    contents = await file.read(_MAX_UPLOAD + 1)
+    if len(contents) > _MAX_UPLOAD:
+        raise HTTPException(status_code=413, detail="File too large. Maximum upload size is 10 MB.")
+    try:
+        raw_rows, columns = parse_file(contents, fname)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not parse file: {exc}")
+    if not raw_rows:
+        raise HTTPException(status_code=422, detail="File is empty or has no data rows.")
+
+    str_rows = [{k: str(v) if v is not None else "" for k, v in row.items()} for row in raw_rows]
+    col_mapping = _sheet_map_columns(columns)
+    if "serial_no" not in col_mapping:
+        raise HTTPException(status_code=422, detail="Could not detect a Serial No column (expected: Serial No, Sno, S.No, ID).")
+    if "regarding" not in col_mapping:
+        raise HTTPException(status_code=422, detail="Could not detect a Regarding / Account column.")
+
+    rows = _sheet_normalize_rows(str_rows, col_mapping)
+    return await _classify_rows(user.user_id, rows, col_mapping)
+
+
+async def _classify_rows(user_id: str, rows: List[Dict[str, Any]], col_mapping: Dict[str, str]) -> Dict[str, Any]:
+    """Split rows into new vs already-logged based on serial_no history."""
+    serial_nos = [r["serial_no"] for r in rows if r.get("serial_no")]
+    existing = await db.activity_sheet_log.find(
+        {"user_id": user_id, "serial_no": {"$in": serial_nos}},
+        {"serial_no": 1, "_id": 0},
+    ).to_list(10000)
+    logged = {e["serial_no"] for e in existing}
+    new_rows = [r for r in rows if r.get("serial_no") not in logged]
+    dup_rows  = [r for r in rows if r.get("serial_no") in logged]
+    return {
+        "success": True,
+        "data": {
+            "new_rows": new_rows,
+            "duplicate_rows": dup_rows,
+            "total_new": len(new_rows),
+            "total_duplicate": len(dup_rows),
+            "detected_columns": col_mapping,
+        },
+        "error": None,
+    }
+
+
+@api_router.post("/activity-sheets/execute")
+async def execute_activity_sheet(body: ActivitySheetExecuteRequest, request: Request):
+    """Bulk-log activity sheet rows to D365 as Appointments (Customer Meeting). Deduplication enforced."""
+    user = await require_auth(request)
+    if not body.rows:
+        raise HTTPException(status_code=400, detail="No rows to execute.")
+
+    job_id = str(uuid.uuid4())
+    initial_rows = [
+        {"serial_no": r.get("serial_no", ""), "regarding": r.get("regarding", ""),
+         "date": r.get("date", ""), "status": "pending"}
+        for r in body.rows
+    ]
+    await db.activity_sheet_jobs.insert_one({
+        "id": job_id, "user_id": user.user_id,
+        "total": len(body.rows), "done": 0, "failed": 0,
+        "status": "running", "rows": initial_rows,
+        "created_at": datetime.now(timezone.utc),
+    })
+    asyncio.create_task(_safe_task(_run_activity_sheet_job(job_id, user, body.rows), "activity_sheet_jobs", job_id))
+    return {"success": True, "data": {"job_id": job_id, "total": len(body.rows)}, "error": None}
+
+
+@api_router.get("/activity-sheets/jobs/{job_id}")
+async def get_activity_sheet_job(job_id: str, request: Request):
+    user = await require_auth(request)
+    job = await db.activity_sheet_jobs.find_one({"id": job_id, "user_id": user.user_id}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if isinstance(job.get("created_at"), datetime):
+        job["created_at"] = job["created_at"].isoformat()
+    return {"success": True, "data": job, "error": None}
+
+
+@api_router.get("/activity-sheets/history")
+async def get_activity_sheet_history(request: Request):
+    user = await require_auth(request)
+    docs = await db.activity_sheet_log.find(
+        {"user_id": user.user_id},
+        {"serial_no": 1, "regarding": 1, "date": 1, "d365_status": 1, "logged_at": 1, "_id": 0},
+    ).sort("logged_at", -1).to_list(500)
+    for d in docs:
+        if isinstance(d.get("logged_at"), datetime):
+            d["logged_at"] = d["logged_at"].isoformat()
+    return {"success": True, "data": {"entries": docs, "total": len(docs)}, "error": None}
+
+
+async def _run_activity_sheet_job(
+    job_id: str, user: "User", rows: List[Dict[str, Any]]
+) -> None:
+    """Background: summarize notes, look up MDM IDs, post each row to D365 as an Appointment."""
+    from groq import AsyncGroq
+    api_key = os.environ.get("GROQ_API_KEY", "")
+    groq_client = AsyncGroq(api_key=api_key) if api_key else None
+
+    # Load account list once — fuzzy match per row against this cache
+    account_cache: List[Dict[str, str]] = []
+    default_file = await db.uploaded_files.find_one(
+        {"user_id": user.user_id, "is_default": True}, {"file_id": 1}
+    )
+    if default_file:
+        account_cache = await db.user_account_data.find(
+            {"user_id": user.user_id, "file_id": default_file["file_id"]},
+            {"account_name": 1, "l2_mdm_id_idg": 1, "_id": 0},
+        ).to_list(50000)
+
+    acc_name_list = [a["account_name"] for a in account_cache if a.get("account_name")]
+    acc_mdm_map   = {a["account_name"]: a.get("l2_mdm_id_idg", "") for a in account_cache}
+
+    for idx, row in enumerate(rows):
+        serial_no       = row.get("serial_no", "")
+        regarding       = row.get("regarding", "")
+        date_str        = row.get("date", "")
+        time_str        = row.get("time", "")
+        notes_raw       = row.get("notes", "")
+        primary_att     = row.get("primary_attendee", "") or user.name
+
+        start_time = _sheet_combine_datetime(date_str, time_str)
+
+        notes_summary = notes_raw
+        if groq_client and notes_raw:
+            try:
+                notes_summary = await _sheet_summarize_notes(
+                    notes_raw, regarding, date_str, groq_client,
+                    os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
+                )
+            except Exception:
+                notes_summary = notes_raw
+
+        # Fuzzy MDM lookup — match user input against canonical account names
+        mdm_id = ""
+        canonical_account = regarding
+        if regarding and acc_name_list:
+            matches = _fuzzy_match(regarding, acc_name_list, threshold=0.35, top_n=1)
+            if matches:
+                canonical_account = matches[0][1]
+                mdm_id = acc_mdm_map.get(canonical_account, "")
+
+        params: Dict[str, Any] = {
+            "activity_type":     "appointment",
+            "activity_sub_type": "Customer Meeting",
+            "subject":           f"Customer Meeting - {canonical_account}",
+            "account":           canonical_account,
+            "mdm_id":            mdm_id,
+            "duration_minutes":  60,
+            "notes":             notes_summary,
+            "start_time":        start_time,
+            "primary_attendee":  primary_att,
+        }
+
+        try:
+            result = await _execute_d365_activity(user, params)
+            row_update: Dict[str, Any] = {
+                "status":       result.get("status", "success"),
+                "record_id":    result.get("d365_record_id", ""),
+                "record_url":   result.get("record_url", ""),
+                "notes_summary": notes_summary,
+            }
+            await db.activity_sheet_log.update_one(
+                {"user_id": user.user_id, "serial_no": serial_no},
+                {"$set": {
+                    "user_id":        user.user_id,
+                    "serial_no":      serial_no,
+                    "regarding":      canonical_account,
+                    "date":           date_str,
+                    "notes_original": notes_raw,
+                    "notes_summary":  notes_summary,
+                    "d365_record_id": row_update["record_id"],
+                    "d365_status":    row_update["status"],
+                    "logged_at":      datetime.now(timezone.utc),
+                }},
+                upsert=True,
+            )
+        except Exception as exc:
+            row_update = {"status": "failed", "error": str(exc)}
+
+        is_done   = row_update["status"] in ("success", "pending")
+        is_failed = row_update["status"] == "failed"
+        await db.activity_sheet_jobs.update_one(
+            {"id": job_id},
+            {
+                "$set": {f"rows.{idx}": {
+                    "serial_no": serial_no, "regarding": regarding,
+                    "date": date_str, **row_update,
+                }},
+                "$inc": {"done": 1 if is_done else 0, "failed": 1 if is_failed else 0},
+            },
+        )
+
+    await db.activity_sheet_jobs.update_one({"id": job_id}, {"$set": {"status": "complete"}})
+
+
 # ============== App Registration ==============
 
-app.include_router(api_router)
+# CORS — fail closed: never default to wildcard
+_cors_raw = os.environ.get('CORS_ORIGINS', '')
+if not _cors_raw:
+    if APP_ENV == 'dev':
+        _cors_raw = 'http://localhost:3000,http://localhost:8000'
+    else:
+        raise RuntimeError("CORS_ORIGINS env var is required in production")
+_cors_origins = [o.strip() for o in _cors_raw.split(',') if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Internal-Key"],
 )
+
+app.include_router(api_router)
+
+
+@app.get("/healthz", tags=["ops"])
+async def healthz():
+    return {"status": "ok"}
 
 # ── Static frontend (dev mode only) ──────────────────────────────────────────
 # In dev: `yarn build` once, then uvicorn serves everything on http://localhost:8000
 # In prod: frontend is a separate Render static site — this block is skipped
-if APP_ENV == 'dev' and FRONTEND_BUILD_DIR.exists():
+if APP_ENV == 'dev' and (FRONTEND_BUILD_DIR / "static").exists():
     app.mount(
         "/static",
         StaticFiles(directory=str(FRONTEND_BUILD_DIR / "static")),
@@ -1581,19 +1853,66 @@ if APP_ENV == 'dev' and FRONTEND_BUILD_DIR.exists():
         return {"error": "Frontend build not found — run `yarn build` in frontend/"}
 
 
+async def _safe_index(collection, keys, **kwargs):
+    """Create an index idempotently.
+
+    If MongoDB rejects because an existing index has the same name but different
+    options (code 86 — IndexKeySpecsConflict), the old index is dropped and the
+    new one is created. This handles the common case of upgrading a plain index
+    to a unique one after the collection already existed.
+    """
+    try:
+        await collection.create_index(keys, **kwargs)
+    except OperationFailure as exc:
+        if exc.code != 86:
+            raise
+        # Derive the auto-generated index name pymongo uses
+        if isinstance(keys, str):
+            index_name = f"{keys}_1"
+        else:
+            index_name = "_".join(f"{k}_{v}" for k, v in keys)
+        logger.warning("Dropping conflicting index '%s' on %s and recreating", index_name, collection.name)
+        try:
+            await collection.drop_index(index_name)
+        except Exception:
+            pass
+        await collection.create_index(keys, **kwargs)
+
+
 @app.on_event("startup")
 async def startup_event():
     logger.info("Sales Copilot API starting up...")
-    # Create MongoDB indexes for performance
-    await db.user_sessions.create_index("session_token")
-    await db.user_sessions.create_index("expires_at")
-    await db.workflow_executions.create_index("user_id")
-    await db.workflow_executions.create_index("created_at")
-    await db.chat_history.create_index([("user_id", 1), ("created_at", -1)])
-    await db.user_account_data.create_index([("user_id", 1), ("account_name", 1)])
-    await db.uploaded_files.create_index([("user_id", 1), ("uploaded_at", -1)])
-    await db.app_knowledge_base.create_index([("user_id", 1), ("timestamp", -1)])
-    await db.app_knowledge_base.create_index([("user_id", 1), ("event_type", 1)])
+    if not os.environ.get("INTERNAL_KEY"):
+        logger.warning("INTERNAL_KEY is not set — internal webhook callbacks will be rejected")
+    if not os.environ.get("GROQ_API_KEY"):
+        logger.warning("GROQ_API_KEY is not set — AI chat will fail on first request")
+
+    # ── Session indexes ───────────────────────────────────────────────────────
+    await _safe_index(db.user_sessions, "session_token", unique=True)
+    # TTL index: MongoDB auto-deletes expired session documents
+    await _safe_index(db.user_sessions, "expires_at", expireAfterSeconds=0)
+
+    # ── Auth indexes ──────────────────────────────────────────────────────────
+    await _safe_index(db.authorized_users, "email", unique=True)
+
+    # ── Workflow execution indexes ────────────────────────────────────────────
+    await _safe_index(db.workflow_executions, [("user_id", 1), ("created_at", -1)])
+
+    # ── Batch job indexes (polled every 2s during job runs) ───────────────────
+    await _safe_index(db.batch_jobs, [("id", 1), ("user_id", 1)])
+    await _safe_index(db.activity_sheet_jobs, [("id", 1), ("user_id", 1)])
+
+    # ── Activity sheet deduplication (serial_no lookup on every parse) ────────
+    await _safe_index(db.activity_sheet_log, [("user_id", 1), ("serial_no", 1)], unique=True)
+
+    # ── Account/file indexes ──────────────────────────────────────────────────
+    await _safe_index(db.chat_history, [("user_id", 1), ("created_at", -1)])
+    await _safe_index(db.user_account_data, [("user_id", 1), ("file_id", 1), ("account_name", 1)])
+    await _safe_index(db.uploaded_files, [("user_id", 1), ("uploaded_at", -1)])
+    await _safe_index(db.activity_rules, [("user_id", 1), ("created_at", -1)])
+    await _safe_index(db.app_knowledge_base, [("user_id", 1), ("timestamp", -1)])
+    await _safe_index(db.app_knowledge_base, [("user_id", 1), ("event_type", 1)])
+
     logger.info("MongoDB indexes ensured.")
 
 

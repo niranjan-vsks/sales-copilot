@@ -26,6 +26,9 @@ pydantic>=2.6.4
 openpyxl>=3.1.0
 pandas>=2.0.0
 
+# Rate limiting
+slowapi>=0.1.9
+
 # Dev / testing
 pytest>=8.0.0
 black>=24.1.1

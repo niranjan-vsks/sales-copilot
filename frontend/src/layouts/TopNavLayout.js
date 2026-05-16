@@ -52,7 +52,6 @@ export default function TopNavLayout() {
             <NavLink
               key={to}
               to={to}
-              data-testid={`nav-${label.toLowerCase().replace(' ', '-')}`}
               className={({ isActive }) =>
                 `flex items-center gap-2 px-3 h-8 text-sm font-medium transition-colors ${
                   isActive
@@ -70,7 +69,6 @@ export default function TopNavLayout() {
         {/* Right side */}
         <div className="ml-auto flex items-center gap-3">
           <button
-            data-testid="nav-bell"
             className="w-8 h-8 flex items-center justify-center text-[#9CA3AF] hover:text-[#F2F3F5] transition-colors"
           >
             <Bell className="w-4 h-4" />
@@ -78,7 +76,6 @@ export default function TopNavLayout() {
 
           <DropdownMenu>
             <DropdownMenuTrigger
-              data-testid="nav-avatar-menu"
               className="flex items-center gap-2 text-sm text-[#9CA3AF] hover:text-[#F2F3F5] transition-colors focus:outline-none"
             >
               <div className="w-7 h-7 bg-[#FF4500]/20 border border-[#FF4500]/30 flex items-center justify-center text-[#FF4500] text-xs font-bold shrink-0">
@@ -96,28 +93,24 @@ export default function TopNavLayout() {
               {user?.role === 'admin' && (
                 <>
                   <DropdownMenuItem
-                    data-testid="nav-team"
                     onClick={() => navigate('/admin/team')}
                     className="cursor-pointer hover:bg-[#1f2022] focus:bg-[#1f2022]"
                   >
                     <Users className="w-4 h-4 mr-2" /> Team
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    data-testid="nav-connections"
                     onClick={() => navigate('/admin/connections')}
                     className="cursor-pointer hover:bg-[#1f2022] focus:bg-[#1f2022]"
                   >
                     <Settings className="w-4 h-4 mr-2" /> Connections
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    data-testid="nav-monitoring"
                     onClick={() => navigate('/admin/monitoring')}
                     className="cursor-pointer hover:bg-[#1f2022] focus:bg-[#1f2022]"
                   >
                     <Monitor className="w-4 h-4 mr-2" /> Monitoring
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    data-testid="nav-file-management"
                     onClick={() => navigate('/admin/file-management')}
                     className="cursor-pointer hover:bg-[#1f2022] focus:bg-[#1f2022]"
                   >
@@ -127,7 +120,6 @@ export default function TopNavLayout() {
                 </>
               )}
               <DropdownMenuItem
-                data-testid="nav-logout"
                 onClick={handleLogout}
                 className="cursor-pointer text-[#ef4444] hover:bg-[#1f2022] focus:bg-[#1f2022]"
               >

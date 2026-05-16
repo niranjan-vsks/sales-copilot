@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { BarChart2, ClipboardList, MessageSquare, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -29,19 +29,6 @@ export default function LoginPage() {
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState('');
 
-  const [devEnabled, setDevEnabled]   = useState(false);
-  const [devUser, setDevUser]         = useState('');
-  const [devPass, setDevPass]         = useState('');
-  const [devLoading, setDevLoading]   = useState(false);
-  const [devError, setDevError]       = useState('');
-
-  useEffect(() => {
-    fetch('/api/auth/dev-login/check')
-      .then(r => r.json())
-      .then(d => setDevEnabled(d?.data?.enabled === true))
-      .catch(() => {});
-  }, []);
-
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -60,32 +47,9 @@ export default function LoginPage() {
       }
       window.location.href = '/#/dashboard';
     } catch {
-      setError('Connection error. Is the backend running?');
+      setError('Connection error. Please try again.');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleDevLogin = async () => {
-    setDevLoading(true);
-    setDevError('');
-    try {
-      const res = await fetch('/api/auth/dev-login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ username: devUser, password: devPass }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        setDevError(err.detail || 'Invalid credentials');
-        return;
-      }
-      window.location.href = '/#/dashboard';
-    } catch {
-      setDevError('Connection error. Is the backend running?');
-    } finally {
-      setDevLoading(false);
     }
   };
 
@@ -163,7 +127,6 @@ export default function LoginPage() {
             </span>
           </div>
 
-          {/* Heading */}
           <div className="mb-8">
             <h3 className="font-['Space_Grotesk'] text-[#F2F3F5] text-xl font-bold mb-2">
               Sign in to continue
@@ -173,7 +136,6 @@ export default function LoginPage() {
             </p>
           </div>
 
-          {/* Email + Password form */}
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Email</Label>
@@ -204,7 +166,6 @@ export default function LoginPage() {
 
             <Button
               type="submit"
-              data-testid="login-button"
               disabled={loading || !email || !password}
               className="w-full h-11 bg-[#FF4500] hover:bg-[#e63e00] text-white font-medium transition-colors rounded-none disabled:opacity-60"
             >
@@ -212,45 +173,12 @@ export default function LoginPage() {
             </Button>
           </form>
 
-          {/* Footer note */}
           <p className="text-[#9CA3AF] text-xs mt-6">
             Contact your admin to be added to the team.
           </p>
-
-          {/* Dev / Demo override — only renders when DEV_LOGIN_ENABLED=true */}
-          {devEnabled && (
-            <>
-              <div style={{ borderTop: '1px solid #1f2022', margin: '24px 0' }} />
-              <p className="text-[#9CA3AF] text-xs mb-3">Admin Override</p>
-              <Input
-                placeholder="Username"
-                value={devUser}
-                onChange={e => setDevUser(e.target.value)}
-                className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] rounded-none"
-              />
-              <Input
-                type="password"
-                placeholder="Password"
-                value={devPass}
-                onChange={e => setDevPass(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleDevLogin()}
-                className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] rounded-none mt-2"
-              />
-              {devError && (
-                <p className="text-[#ef4444] text-xs mt-2">{devError}</p>
-              )}
-              <Button
-                onClick={handleDevLogin}
-                disabled={devLoading || !devUser || !devPass}
-                className="w-full h-10 mt-3 bg-[#1f2022] hover:bg-[#2a2c2e] text-[#F2F3F5] font-medium transition-colors rounded-none"
-              >
-                {devLoading ? 'Signing in...' : 'Continue'}
-              </Button>
-            </>
-          )}
         </motion.div>
 
-        {/* Mobile headline — only below lg */}
+        {/* Mobile headline */}
         <div className="lg:hidden mt-10 px-4">
           <h1 className="font-['Space_Grotesk'] text-[#F2F3F5] text-3xl font-bold leading-tight mb-3">
             Your sales workflows, <span className="text-[#FF4500]">on autopilot.</span>

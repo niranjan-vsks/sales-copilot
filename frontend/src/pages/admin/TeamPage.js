@@ -94,7 +94,6 @@ export default function TeamPage() {
           </div>
         </div>
         <Button
-          data-testid="btn-add-member"
           onClick={() => { reset(); setAddOpen(true); }}
           className="bg-[#FF4500] hover:bg-[#e63e00] text-white rounded-none h-9 px-4 text-sm transition-colors"
         >
@@ -141,7 +140,6 @@ export default function TeamPage() {
                   </td>
                   <td className="px-4 py-3 text-right">
                     <Button
-                      data-testid={`btn-remove-${m.email}`}
                       variant="ghost"
                       size="sm"
                       onClick={() => setRemoving(m.email)}
@@ -160,7 +158,6 @@ export default function TeamPage() {
       {/* Add member dialog */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent
-          data-testid="add-member-dialog"
           className="bg-[#141416] border border-[#1f2022] text-[#F2F3F5] max-w-md rounded-none p-0 gap-0"
         >
           <DialogHeader className="px-6 pt-6 pb-4 border-b border-[#1f2022]">
@@ -178,7 +175,6 @@ export default function TeamPage() {
               <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Full Name</Label>
               <Input
                 {...register('display_name')}
-                data-testid="input-member-name"
                 placeholder="Jane Doe"
                 className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] placeholder:text-[#9CA3AF]/60 rounded-none h-9 text-sm focus-visible:ring-[#FF4500] focus-visible:border-[#FF4500]"
               />
@@ -191,7 +187,6 @@ export default function TeamPage() {
               <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Work Email</Label>
               <Input
                 {...register('email')}
-                data-testid="input-member-email"
                 type="email"
                 placeholder="jane@company.com"
                 className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] placeholder:text-[#9CA3AF]/60 rounded-none h-9 text-sm focus-visible:ring-[#FF4500] focus-visible:border-[#FF4500]"
@@ -205,7 +200,6 @@ export default function TeamPage() {
               <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Initial Password</Label>
               <Input
                 {...register('password')}
-                data-testid="input-member-password"
                 type="password"
                 placeholder="Min. 8 characters"
                 className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] placeholder:text-[#9CA3AF]/60 rounded-none h-9 text-sm focus-visible:ring-[#FF4500] focus-visible:border-[#FF4500]"
@@ -219,7 +213,6 @@ export default function TeamPage() {
               <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Role</Label>
               <Select onValueChange={(v) => setValue('role', v)} defaultValue="rep">
                 <SelectTrigger
-                  data-testid="select-member-role"
                   className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] rounded-none h-9 text-sm focus:ring-[#FF4500]"
                 >
                   <SelectValue />
@@ -235,7 +228,6 @@ export default function TeamPage() {
               <Button
                 type="button"
                 variant="ghost"
-                data-testid="btn-cancel-add-member"
                 onClick={() => setAddOpen(false)}
                 className="text-[#9CA3AF] border border-[#1f2022] hover:bg-[#1f2022] rounded-none h-8 text-xs transition-colors"
               >
@@ -243,7 +235,6 @@ export default function TeamPage() {
               </Button>
               <Button
                 type="submit"
-                data-testid="btn-confirm-add-member"
                 disabled={saving}
                 className="bg-[#FF4500] hover:bg-[#e63e00] text-white rounded-none h-8 px-4 text-xs transition-colors disabled:opacity-60"
               >
@@ -266,13 +257,11 @@ export default function TeamPage() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel
-              data-testid="btn-cancel-remove"
               className="bg-transparent border-[#1f2022] text-[#9CA3AF] hover:bg-[#1f2022] rounded-none"
             >
               Cancel
             </AlertDialogCancel>
             <AlertDialogAction
-              data-testid="btn-confirm-remove"
               onClick={confirmRemove}
               className="bg-[#ef4444] hover:bg-[#dc2626] text-white rounded-none border-0"
             >

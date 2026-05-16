@@ -63,7 +63,6 @@ export default function SidebarLayout() {
             <NavLink
               key={to}
               to={to}
-              data-testid={`sidebar-${label.toLowerCase()}`}
               className={({ isActive }) =>
                 `relative flex items-center gap-2.5 px-4 h-9 text-sm font-medium transition-colors ${
                   isActive
@@ -95,7 +94,6 @@ export default function SidebarLayout() {
                 <NavLink
                   key={to}
                   to={to}
-                  data-testid={`sidebar-admin-${label.toLowerCase()}`}
                   className={({ isActive }) =>
                     `relative flex items-center gap-2.5 px-4 h-9 text-sm font-medium transition-colors ${
                       isActive
@@ -131,7 +129,6 @@ export default function SidebarLayout() {
             </div>
           </div>
           <button
-            data-testid="sidebar-logout"
             onClick={handleLogout}
             className="flex items-center gap-2 text-xs text-[#9CA3AF] hover:text-[#ef4444] transition-colors w-full"
           >
