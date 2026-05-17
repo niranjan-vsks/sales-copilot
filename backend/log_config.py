@@ -5,8 +5,12 @@ Logs rotate at midnight; 30 days retained.
 """
 import logging
 import logging.handlers
+import os
 from datetime import datetime
 from pathlib import Path
+
+_env = os.environ.get("APP_ENVIRONMENT", "development")
+_level = logging.DEBUG if _env == "development" else logging.INFO
 
 _LOG_DIR = Path(__file__).parent / "instance"
 _FMT = "%(asctime)s | %(levelname)-8s | %(name)-30s | %(message)s"
@@ -24,10 +28,11 @@ def _rotated_namer(default_name: str) -> str:
         return default_name
 
 
-def setup_logging(level: int = logging.DEBUG) -> None:
+def setup_logging(level: int = _level) -> None:
     """
     Call once at application startup.
     Attaches a daily-rotating file handler and a console handler to the root logger.
+    Log level defaults to DEBUG in development, INFO in all other environments.
     """
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -46,7 +51,7 @@ def setup_logging(level: int = logging.DEBUG) -> None:
     )
     file_handler.namer = _rotated_namer
     file_handler.setFormatter(formatter)
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(_level)
 
     # ── Console handler (INFO and above) ─────────────────────────────────────
     console_handler = logging.StreamHandler()

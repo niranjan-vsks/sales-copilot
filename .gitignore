@@ -7,6 +7,7 @@
 # Dependencies
 node_modules/
 /node_modules
+Sales_Copilot_Now/
 /.pnp
 .pnp.js
 .yarn/install-state.gz
@@ -41,6 +42,9 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 dump.rdb
+
+# Sales Copilot daily log files
+backend/instance/
 
 # System files
 .DS_Store

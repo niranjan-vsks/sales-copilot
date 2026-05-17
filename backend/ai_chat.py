@@ -8,11 +8,15 @@ workflows with real data.
 
 Required env var:  GROQ_API_KEY
 Optional env var:  GROQ_MODEL  (default: llama-3.1-8b-instant)
+
+Prompts are loaded from the prompts/ directory at startup so they can be
+edited without touching Python code.
 """
 import json
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from groq import AsyncGroq
@@ -20,12 +24,35 @@ from groq import AsyncGroq
 logger = logging.getLogger(__name__)
 
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+_groq_client: Optional[AsyncGroq] = None
+
+
+def _get_groq_client() -> AsyncGroq:
+    global _groq_client
+    if _groq_client is None:
+        api_key = os.environ.get("GROQ_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("GROQ_API_KEY is not configured")
+        _groq_client = AsyncGroq(api_key=api_key)
+    return _groq_client
+
+
+def _load_prompt(filename: str) -> str:
+    """Read a prompt template from the prompts/ directory."""
+    path = _PROMPTS_DIR / filename
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.error("Prompt file not found: %s", path)
+        return ""
 
 
 # ─── Dynamic system prompt ────────────────────────────────────────────────────
 
-def build_system_prompt(context: Dict[str, Any], today: str) -> str:
-    """Construct the system prompt with live app state embedded."""
+def _build_live_state(context: Dict[str, Any]) -> str:
+    """Build the LIVE APPLICATION STATE block injected into the system prompt."""
 
     # Webhook line
     if context.get("webhook_connected"):
@@ -68,47 +95,25 @@ def build_system_prompt(context: Dict[str, Any], today: str) -> str:
 
     total_acc = context.get("total_accounts_cached", 0)
 
-    return f"""You are a context-aware AI assistant for a Sales Workflow Automation platform used by Cisco sales reps.
-Today's date: {today}
+    return (
+        f"- Webhook: {webhook_line}\n"
+        f"- Default Account File: {file_line}\n"
+        f"- Total Accounts Cached: {total_acc}\n"
+        f"- Cookie Session: {cookie_line}\n"
+        f"- Last Activity Created: {last_act_line}\n"
+        f"- Recent Workflows:\n{recent_lines}"
+    )
 
-LIVE APPLICATION STATE (use this to answer questions — do not guess):
-- Webhook: {webhook_line}
-- Default Account File: {file_line}
-- Total Accounts Cached: {total_acc}
-- Cookie Session: {cookie_line}
-- Last Activity Created: {last_act_line}
-- Recent Workflows:
-{recent_lines}
 
-WHAT YOU CAN DO:
-1. Answer questions about the application state using the live data above
-2. Trigger D365 activity workflows (phone calls, tasks, meetings/appointments)
-3. Guide the user to configure connections step by step
-4. Report on recent activities, files, and account data
-
-TRIGGERABLE WORKFLOWS:
-- phonecall  : requires subject, account, duration_minutes (default 30)
-- appointment: requires subject, account, duration_minutes (default 30) — also used for tasks and follow-ups
-
-RULES:
-- Resolve relative dates ("yesterday", "last Monday") to ISO 8601 using today's date above
-- "call" or "phone call" → workflow_type = "phonecall"
-- "meeting" or "appointment" → workflow_type = "appointment"
-- "task" or "follow-up" → workflow_type = "appointment"
-- duration_minutes must be an integer (15, 30, 45, 60, 90, 120 are common)
-- If any required param is missing → action = "answer", clarification_needed = true, ask specifically
-- For app-state questions → answer using the LIVE APPLICATION STATE above
-- For configuration help → action = "guide", give concise step-by-step instructions
-- Be concise, professional, and direct. No emojis. No markdown inside user_message.
-
-ALWAYS respond with valid JSON only. No text outside the JSON block.
-{{
-  "action": "trigger_workflow | answer | guide",
-  "workflow_type": "phonecall | task | appointment | null",
-  "payload": {{}},
-  "clarification_needed": false,
-  "user_message": "Concise human-readable response to show the user"
-}}"""
+def build_system_prompt(context: Dict[str, Any], today: str) -> str:
+    """Construct the system prompt from the template file with live state injected."""
+    template = _load_prompt("ai_chat_system.txt")
+    live_state = _build_live_state(context)
+    return (
+        template
+        .replace("__TODAY__", today)
+        .replace("__LIVE_STATE__", live_state)
+    )
 
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
@@ -130,11 +135,7 @@ async def process_message(
           user_message:         str
         }
     """
-    api_key = os.environ.get("GROQ_API_KEY", "")
-    if not api_key:
-        raise ValueError("GROQ_API_KEY is not set")
-
-    client = AsyncGroq(api_key=api_key)
+    client = _get_groq_client()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     system_content = build_system_prompt(context_snapshot or {}, today)
 
@@ -155,7 +156,7 @@ async def process_message(
             model=GROQ_MODEL,
             messages=messages,
             temperature=0.15,
-            max_tokens=768,
+            max_tokens=1024,
         )
         raw = response.choices[0].message.content.strip()
 
@@ -170,7 +171,6 @@ async def process_message(
 
         action = result.get("action", "answer")
         workflow_type = result.get("workflow_type")
-        # Normalise nullish strings
         if workflow_type in (None, "null", ""):
             workflow_type = None
 
@@ -180,8 +180,10 @@ async def process_message(
             "payload": result.get("payload", {}),
             "clarification_needed": bool(result.get("clarification_needed", False)),
             "user_message": result.get("user_message", "I can help with that."),
-            # Legacy compat: keep "workflow" key so existing callers don't break
-            "workflow": "log-d365-activity" if action == "trigger_workflow" and workflow_type else None,
+            # Legacy compat
+            "workflow": "log-d365-activity" if action == "trigger_workflow" and workflow_type == "appointment" else (
+                "activity-sheet" if action == "trigger_workflow" and workflow_type == "activity_sheet" else None
+            ),
             "params": result.get("payload", {}),
         }
 

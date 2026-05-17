@@ -251,7 +251,6 @@ export default function ChatPage() {
         <div className="flex gap-3 items-end max-w-4xl mx-auto">
           <Textarea
             ref={textareaRef}
-            data-testid="chat-input"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -261,7 +260,6 @@ export default function ChatPage() {
             style={{ overflow: 'auto' }}
           />
           <Button
-            data-testid="chat-send"
             onClick={() => sendMessage()}
             disabled={!input.trim() || sending}
             className="bg-[#FF4500] hover:bg-[#e63e00] text-white rounded-none h-9 w-9 p-0 shrink-0 transition-colors disabled:opacity-50"

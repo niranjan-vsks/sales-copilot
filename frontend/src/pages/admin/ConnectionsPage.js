@@ -229,7 +229,6 @@ export default function ConnectionsPage() {
               </p>
             </div>
             <Switch
-              data-testid="toggle-dry-run"
               checked={dryRun}
               onCheckedChange={saveDryRun}
               className="data-[state=checked]:bg-[#FF4500]"
@@ -238,7 +237,6 @@ export default function ConnectionsPage() {
 
           {/* Test connection */}
           <Button
-            data-testid="btn-test-d365"
             onClick={testD365}
             disabled={testing}
             className="bg-[#FF4500] hover:bg-[#e63e00] text-white rounded-none h-9 px-5 text-sm transition-colors disabled:opacity-60"
