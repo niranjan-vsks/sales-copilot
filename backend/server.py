@@ -493,8 +493,11 @@ async def _execute_d365_activity(user: User, params: Dict[str, Any]) -> Dict[str
             logger.info("D365 activity via webhook for %s — status: %s", user.email, status)
             if not record_id:
                 logger.warning(
-                    "Webhook accepted (HTTP %s) but returned no activityid. PA response: %s",
-                    record.get("_http_status"), record.get("_raw_response"),
+                    "Webhook accepted (HTTP %s) but returned no activityid for account '%s'. "
+                    "Fix: open the Power Automate flow and set the HTTP Response body to "
+                    '{"activityid": "@{outputs(\'Create_a_new_record\')?[\'body/activityid\']}"}. '
+                    "PA response: %s",
+                    record.get("_http_status"), account, record.get("_raw_response"),
                 )
             return {
                 "status": status,
@@ -1768,10 +1771,11 @@ async def _run_activity_sheet_job(
         try:
             result = await _execute_d365_activity(user, params)
             row_update: Dict[str, Any] = {
-                "status":       result.get("status", "success"),
-                "record_id":    result.get("d365_record_id", ""),
-                "record_url":   result.get("record_url", ""),
-                "notes_summary": notes_summary,
+                "status":         result.get("status", "success"),
+                "record_id":      result.get("d365_record_id", ""),
+                "record_url":     result.get("record_url", ""),
+                "notes_summary":  notes_summary,
+                "pending_reason": result.get("pending_reason"),
             }
             await db.activity_sheet_log.update_one(
                 {"user_id": user.user_id, "serial_no": serial_no},
