@@ -4,6 +4,7 @@ import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 
 import LoginPage         from "@/pages/LoginPage";
+import SignupPage         from "@/pages/SignupPage";
 import DashboardPage     from "@/pages/DashboardPage";
 import ChatPage          from "@/pages/ChatPage";
 import ActivitiesPage    from "@/pages/ActivitiesPage";
@@ -19,7 +20,8 @@ function AppRouter() {
   return (
     <Routes>
       {/* Public */}
-      <Route path="/login" element={<LoginPage />} />
+      <Route path="/login"  element={<LoginPage />} />
+      <Route path="/signup" element={<SignupPage />} />
 
       {/* All authenticated routes — SidebarLayout */}
       <Route

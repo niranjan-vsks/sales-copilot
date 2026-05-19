@@ -31,6 +31,7 @@ from ai_chat import process_message
 from d365_client import D365Client
 from excel_processor import parse_file, detect_account_columns, fuzzy_match as _fuzzy_match
 from knowledge_base import KnowledgeBaseService
+from auth_signup import create_signup_router
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR.parent / '.env')
@@ -201,6 +202,9 @@ def _cookie_sec() -> dict:
     if APP_ENV == 'dev':
         return {"httponly": True, "secure": False, "samesite": "lax"}
     return {"httponly": True, "secure": True, "samesite": "none"}
+
+
+api_router.include_router(create_signup_router(db, _cookie_sec, SESSION_EXPIRY_DAYS))
 
 
 # ============== Auth Routes ==============
@@ -1898,6 +1902,10 @@ async def startup_event():
 
     # ── Auth indexes ──────────────────────────────────────────────────────────
     await _safe_index(db.authorized_users, "email", unique=True)
+
+    # ── Signup OTP — TTL auto-deletes unverified records after 15 min ─────────
+    await _safe_index(db.pending_verifications, "email", unique=True)
+    await _safe_index(db.pending_verifications, "created_at", expireAfterSeconds=900)
 
     # ── Workflow execution indexes ────────────────────────────────────────────
     await _safe_index(db.workflow_executions, [("user_id", 1), ("created_at", -1)])

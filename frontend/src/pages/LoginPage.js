@@ -1,9 +1,23 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { BarChart2, ClipboardList, MessageSquare, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || '';
+
+function MicrosoftIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 23 23" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="1" y="1" width="10" height="10" fill="#f25022"/>
+      <rect x="12" y="1" width="10" height="10" fill="#7fba00"/>
+      <rect x="1" y="12" width="10" height="10" fill="#00a4ef"/>
+      <rect x="12" y="12" width="10" height="10" fill="#ffb900"/>
+    </svg>
+  );
+}
 
 const FEATURES = [
   {
@@ -136,6 +150,22 @@ export default function LoginPage() {
             </p>
           </div>
 
+          {/* Microsoft SSO */}
+          <a
+            href={`${BACKEND_URL}/api/auth/microsoft`}
+            className="flex items-center justify-center gap-3 w-full h-11 bg-white text-[#3d3d3d] text-sm font-medium hover:bg-gray-50 border border-[#e0e0e0] mb-6 transition-colors"
+          >
+            <MicrosoftIcon />
+            Sign in with Microsoft
+          </a>
+
+          {/* Separator */}
+          <div className="relative flex items-center mb-6">
+            <div className="flex-1 border-t border-[#1f2022]" />
+            <span className="px-3 text-[#9CA3AF] text-xs">or continue with email</span>
+            <div className="flex-1 border-t border-[#1f2022]" />
+          </div>
+
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Email</Label>
@@ -173,8 +203,9 @@ export default function LoginPage() {
             </Button>
           </form>
 
-          <p className="text-[#9CA3AF] text-xs mt-6">
-            Contact your admin to be added to the team.
+          <p className="text-[#9CA3AF] text-xs mt-6 text-center">
+            Don't have an account?{' '}
+            <Link to="/signup" className="text-[#FF4500] hover:underline">Sign up</Link>
           </p>
         </motion.div>
 
