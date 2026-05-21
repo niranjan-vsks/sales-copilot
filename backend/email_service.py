@@ -57,6 +57,7 @@ def send_otp_email(to_email: str, otp: str, name: str) -> None:
     with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
         server.ehlo()
         server.starttls()
+        server.ehlo()  # RFC 3207 requires a second EHLO after STARTTLS
         server.login(smtp_user, smtp_password)
         server.sendmail(from_email, to_email, msg.as_string())
 

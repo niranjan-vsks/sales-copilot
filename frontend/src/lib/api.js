@@ -1,6 +1,8 @@
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || '';
 const API = `${BACKEND_URL}/api`;
 
+let _redirecting = false;
+
 async function apiFetch(path, options = {}) {
   const { body, method = 'GET', ...rest } = options;
   const res = await fetch(`${API}${path}`, {
@@ -11,7 +13,8 @@ async function apiFetch(path, options = {}) {
     ...rest,
   });
 
-  if (res.status === 401) {
+  if (res.status === 401 && !_redirecting) {
+    _redirecting = true;
     window.location.href = '/#/login';
     throw new Error('Not authenticated');
   }

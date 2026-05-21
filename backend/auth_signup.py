@@ -16,6 +16,7 @@ import hashlib
 import secrets
 import uuid
 import os
+import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Callable, Optional
@@ -24,6 +25,7 @@ import bcrypt
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from pymongo.errors import DuplicateKeyError
 
 from email_service import send_otp_email
 from payload_crypto import decrypt_field as _decrypt
@@ -32,8 +34,12 @@ logger = logging.getLogger(__name__)
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
-# HMAC key for OTP hashing — orders of magnitude faster than bcrypt for a 6-digit code
-_OTP_HMAC_KEY = os.environ.get("SECRET_KEY", "dev-secret").encode()
+# Fail hard at startup if SECRET_KEY is missing — a weak default would let
+# attackers precompute all 900k OTP HMAC digests offline.
+_SECRET_KEY = os.environ.get("SECRET_KEY", "")
+if not _SECRET_KEY:
+    raise RuntimeError("SECRET_KEY env var is required")
+_OTP_HMAC_KEY = _SECRET_KEY.encode()
 
 
 def _to_utc(dt: datetime) -> datetime:
@@ -47,6 +53,14 @@ def _hash_otp(otp: str) -> str:
 
 def _verify_otp(otp: str, stored_hash: str) -> bool:
     return hmac.compare_digest(_hash_otp(otp), stored_hash)
+
+
+async def _bcrypt_hash(password: str) -> str:
+    loop = asyncio.get_event_loop()
+    hashed = await loop.run_in_executor(
+        None, bcrypt.hashpw, password.encode(), bcrypt.gensalt(rounds=10)
+    )
+    return hashed.decode()
 
 
 class SignupRequest(BaseModel):
@@ -83,7 +97,10 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
     async def signup(body: SignupRequest):
         email = body.email.lower().strip()
         name = body.name.strip()
-        password = _decrypt(body.password)
+        try:
+            password = _decrypt(body.password)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid request payload.")
 
         if not _EMAIL_RE.match(email):
             raise HTTPException(status_code=400, detail="Invalid email format.")
@@ -101,15 +118,12 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
                 )
             raise HTTPException(status_code=409, detail="Account already exists. Please sign in.")
 
-        await db.pending_verifications.delete_many({"email": email})
-
         otp = str(random.randint(100000, 999999))
-        # bcrypt rounds=10 for password (strong + fast), HMAC-SHA256 for OTP (microseconds)
-        hashed_pw = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=10)).decode()
+        hashed_pw = await _bcrypt_hash(password)
         otp_hash = _hash_otp(otp)
         now = datetime.now(timezone.utc)
 
-        await db.pending_verifications.insert_one({
+        doc = {
             "email": email,
             "name": name,
             "hashed_password": hashed_pw,
@@ -117,12 +131,21 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
             "otp_expiry": now + timedelta(minutes=10),
             "attempts": 0,
             "created_at": now,
-        })
+        }
+        try:
+            # replace_one+upsert is atomic — avoids the TOCTOU race of
+            # delete_many followed by insert_one under concurrent requests.
+            await db.pending_verifications.replace_one({"email": email}, doc, upsert=True)
+        except DuplicateKeyError:
+            raise HTTPException(
+                status_code=409,
+                detail="Signup already in progress for this email. Please check your inbox.",
+            )
 
         try:
             send_otp_email(to_email=email, otp=otp, name=name)
         except Exception as exc:
-            logger.error("OTP email failed for %s: %s", email, exc)
+            logger.error("OTP email failed for %s***@%s: %s", email.split('@')[0][:3], email.split('@')[1], exc)
             await db.pending_verifications.delete_many({"email": email})
             raise HTTPException(
                 status_code=500,
@@ -157,10 +180,10 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
             )
 
         if not _verify_otp(body.otp, pending["otp_hash"]):
-            remaining = 4 - pending["attempts"]
             await db.pending_verifications.update_one(
                 {"email": email}, {"$inc": {"attempts": 1}}
             )
+            remaining = 4 - pending["attempts"]
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid code. {remaining} attempt(s) remaining.",
@@ -246,7 +269,9 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
             {"$set": {
                 "otp_hash": otp_hash,
                 "otp_expiry": now + timedelta(minutes=10),
-                "attempts": 0,
+                # intentionally NOT resetting attempts — a new OTP invalidates
+                # old guesses but the attempt budget carries over to prevent
+                # resend being used to bypass the 5-attempt lockout.
                 "created_at": now,
             }},
         )
@@ -254,7 +279,7 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
         try:
             send_otp_email(to_email=email, otp=otp, name=pending.get("name", ""))
         except Exception as exc:
-            logger.error("OTP resend failed for %s: %s", email, exc)
+            logger.error("OTP resend failed for %s***@%s: %s", email.split('@')[0][:3], email.split('@')[1], exc)
             raise HTTPException(
                 status_code=500,
                 detail="Failed to send email. Check SMTP configuration.",

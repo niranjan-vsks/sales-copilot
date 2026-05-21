@@ -45,7 +45,13 @@ db = _mongo_client[os.environ.get('DB_NAME', 'sales_copilot')]
 kb = KnowledgeBaseService(db)
 
 app = FastAPI(title="Sales Copilot API")
-limiter = Limiter(key_func=get_remote_address)
+def _real_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+limiter = Limiter(key_func=_real_ip)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 api_router = APIRouter(prefix="/api")
@@ -329,8 +335,14 @@ async def login(request: Request, body: LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     stored_hash = auth_user["password_hash"]
-    password = _decrypt_payload(body.password)
-    if not bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8")):
+    try:
+        password = _decrypt_payload(body.password)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    match = await asyncio.get_event_loop().run_in_executor(
+        None, bcrypt.checkpw, password.encode("utf-8"), stored_hash.encode("utf-8")
+    )
+    if not match:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     name = auth_user.get("display_name", email.split("@")[0])
@@ -991,7 +1003,9 @@ async def add_team_member(body: TeamMemberRequest, request: Request):
         "added_at": datetime.now(timezone.utc),
     }
     if body.password:
-        doc["password_hash"] = bcrypt.hashpw(body.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        doc["password_hash"] = (await asyncio.get_event_loop().run_in_executor(
+            None, bcrypt.hashpw, body.password.encode("utf-8"), bcrypt.gensalt()
+        )).decode("utf-8")
     await db.authorized_users.insert_one(doc)
     return {"ok": True}
 
