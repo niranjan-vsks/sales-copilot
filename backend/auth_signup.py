@@ -192,6 +192,10 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         now = datetime.now(timezone.utc)
 
+        # First user to verify becomes admin — mirrors Microsoft auth first-admin pattern
+        admin_count = await db.authorized_users.count_documents({"role": "admin"})
+        role = "admin" if admin_count == 0 else "rep"
+
         await db.users.insert_one({
             "user_id": user_id,
             "email": email,
@@ -199,7 +203,7 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
             "hashed_password": pending["hashed_password"],
             "auth_method": "email",
             "is_verified": True,
-            "role": "rep",
+            "role": role,
             "created_at": now,
             "last_login": now,
         })
@@ -208,7 +212,7 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
             await db.authorized_users.insert_one({
                 "email": email,
                 "display_name": pending["name"],
-                "role": "rep",
+                "role": role,
                 "password_hash": pending["hashed_password"],
                 "added_by": "self-signup",
                 "added_at": now,

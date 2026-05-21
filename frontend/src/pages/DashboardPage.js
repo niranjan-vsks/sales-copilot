@@ -213,9 +213,14 @@ export default function DashboardPage() {
                   <Play className="w-3 h-3 mr-1.5" /> Run
                 </Button>
               ) : (
-                <Button disabled size="sm"
-                  className="w-full bg-transparent border border-[#1f2022] text-[#9CA3AF] rounded-none h-8 text-xs font-medium cursor-not-allowed opacity-50">
-                  Not available yet
+                <Button
+                  size="sm"
+                  onClick={() => toast.info(`${name} — Coming Soon`, {
+                    description: 'This feature is actively being developed. You\'ll be notified when it\'s ready.',
+                  })}
+                  className="w-full bg-transparent border border-[#1f2022] text-[#9CA3AF] rounded-none h-8 text-xs font-medium hover:border-[#FF4500]/30 hover:text-[#F2F3F5] transition-colors"
+                >
+                  Notify Me
                 </Button>
               )}
             </div>

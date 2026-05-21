@@ -119,15 +119,19 @@ export default function SidebarLayout() {
 
         {/* User footer */}
         <div className="border-t border-[#1f2022] p-3">
-          <div className="flex items-center gap-2 mb-2">
+          <button
+            onClick={() => navigate(user?.role === 'admin' ? '/admin/connections' : '/dashboard')}
+            className="flex items-center gap-2 mb-2 w-full hover:opacity-75 transition-opacity"
+            title={user?.role === 'admin' ? 'Settings & Connections' : 'Profile'}
+          >
             <div className="w-6 h-6 bg-[#FF4500]/20 border border-[#FF4500]/30 flex items-center justify-center text-[#FF4500] text-[10px] font-bold shrink-0">
               {initials}
             </div>
-            <div className="min-w-0">
+            <div className="min-w-0 text-left">
               <p className="text-xs font-medium text-[#F2F3F5] truncate">{user?.name || ''}</p>
               <p className="text-[10px] text-[#9CA3AF] truncate">{user?.role || ''}</p>
             </div>
-          </div>
+          </button>
           <button
             onClick={handleLogout}
             className="flex items-center gap-2 text-xs text-[#9CA3AF] hover:text-[#ef4444] transition-colors w-full"

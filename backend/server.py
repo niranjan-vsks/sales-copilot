@@ -1911,6 +1911,22 @@ async def startup_event():
     if not os.environ.get("GROQ_API_KEY"):
         logger.warning("GROQ_API_KEY is not set — AI chat will fail on first request")
 
+    # Bootstrap migration: if no admin exists, promote the earliest authorized_user.
+    # Handles the case where an email-signup user was created before first-admin logic was added.
+    admin_exists = await db.authorized_users.count_documents({"role": "admin"})
+    if not admin_exists:
+        first_user = await db.authorized_users.find_one({}, sort=[("added_at", 1)])
+        if first_user:
+            await db.authorized_users.update_one(
+                {"_id": first_user["_id"]},
+                {"$set": {"role": "admin"}},
+            )
+            await db.users.update_one(
+                {"email": first_user["email"]},
+                {"$set": {"role": "admin"}},
+            )
+            logger.info("Bootstrap: promoted %s to admin (no admins existed)", first_user["email"])
+
     # ── Session indexes ───────────────────────────────────────────────────────
     await _safe_index(db.user_sessions, "session_token", unique=True)
     # TTL index: MongoDB auto-deletes expired session documents

@@ -31,10 +31,12 @@ function AppRouter() {
           </AuthGuard>
         }
       >
-        <Route path="/dashboard"  element={<DashboardPage />} />
-        <Route path="/chat"       element={<ChatPage />} />
-        <Route path="/activities" element={<ActivitiesPage />} />
-        <Route path="/excel"      element={<Navigate to="/admin/file-management" replace />} />
+        <Route path="/dashboard"             element={<DashboardPage />} />
+        <Route path="/chat"                  element={<ChatPage />} />
+        <Route path="/activities"            element={<ActivitiesPage />} />
+        <Route path="/excel"                 element={<Navigate to="/admin/file-management" replace />} />
+        {/* File management APIs require auth only — accessible to all authenticated users */}
+        <Route path="/admin/file-management" element={<FileManagementPage />} />
       </Route>
 
       {/* Admin-only routes */}
@@ -45,10 +47,9 @@ function AppRouter() {
           </AuthGuard>
         }
       >
-        <Route path="/admin/connections"      element={<ConnectionsPage />} />
-        <Route path="/admin/team"             element={<TeamPage />} />
-        <Route path="/admin/monitoring"       element={<MonitoringPage />} />
-        <Route path="/admin/file-management"  element={<FileManagementPage />} />
+        <Route path="/admin/connections" element={<ConnectionsPage />} />
+        <Route path="/admin/team"        element={<TeamPage />} />
+        <Route path="/admin/monitoring"  element={<MonitoringPage />} />
       </Route>
 
       {/* Default redirects */}
