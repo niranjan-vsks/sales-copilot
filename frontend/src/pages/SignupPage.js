@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import api from '@/lib/api';
+import { encryptField } from '@/lib/crypto';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || '';
 
@@ -65,7 +66,8 @@ function RegistrationForm({ onSuccess }) {
     setLoading(true);
     setErrors({});
     try {
-      await api.post('/auth/signup', { email, password, name: name.trim() });
+      const encryptedPassword = await encryptField(password);
+      await api.post('/auth/signup', { email, password: encryptedPassword, name: name.trim() });
       onSuccess(email);
     } catch (err) {
       const msg = err.message || 'Something went wrong.';

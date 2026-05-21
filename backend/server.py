@@ -13,6 +13,7 @@ import re
 import logging
 import secrets
 import bcrypt
+from payload_crypto import decrypt_field as _decrypt_payload
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Optional, Dict, Any, List
@@ -328,7 +329,8 @@ async def login(request: Request, body: LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     stored_hash = auth_user["password_hash"]
-    if not bcrypt.checkpw(body.password.encode("utf-8"), stored_hash.encode("utf-8")):
+    password = _decrypt_payload(body.password)
+    if not bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8")):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     name = auth_user.get("display_name", email.split("@")[0])

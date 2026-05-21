@@ -11,8 +11,11 @@ Endpoints:
 """
 import re
 import random
+import hmac
+import hashlib
 import secrets
 import uuid
+import os
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Callable, Optional
@@ -23,10 +26,27 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from email_service import send_otp_email
+from payload_crypto import decrypt_field as _decrypt
 
 logger = logging.getLogger(__name__)
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+# HMAC key for OTP hashing — orders of magnitude faster than bcrypt for a 6-digit code
+_OTP_HMAC_KEY = os.environ.get("SECRET_KEY", "dev-secret").encode()
+
+
+def _to_utc(dt: datetime) -> datetime:
+    """Make a naive datetime (as MongoDB returns) timezone-aware in UTC."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _hash_otp(otp: str) -> str:
+    return hmac.new(_OTP_HMAC_KEY, otp.encode(), hashlib.sha256).hexdigest()
+
+
+def _verify_otp(otp: str, stored_hash: str) -> bool:
+    return hmac.compare_digest(_hash_otp(otp), stored_hash)
 
 
 class SignupRequest(BaseModel):
@@ -63,11 +83,12 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
     async def signup(body: SignupRequest):
         email = body.email.lower().strip()
         name = body.name.strip()
+        password = _decrypt(body.password)
 
         if not _EMAIL_RE.match(email):
             raise HTTPException(status_code=400, detail="Invalid email format.")
 
-        pw_error = _validate_password(body.password)
+        pw_error = _validate_password(password)
         if pw_error:
             raise HTTPException(status_code=400, detail=pw_error)
 
@@ -80,21 +101,22 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
                 )
             raise HTTPException(status_code=409, detail="Account already exists. Please sign in.")
 
-        # Clear any stale pending record for this email before creating new one
         await db.pending_verifications.delete_many({"email": email})
 
         otp = str(random.randint(100000, 999999))
-        hashed_pw = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt(rounds=12)).decode()
-        otp_hash = bcrypt.hashpw(otp.encode(), bcrypt.gensalt(rounds=12)).decode()
+        # bcrypt rounds=10 for password (strong + fast), HMAC-SHA256 for OTP (microseconds)
+        hashed_pw = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=10)).decode()
+        otp_hash = _hash_otp(otp)
+        now = datetime.now(timezone.utc)
 
         await db.pending_verifications.insert_one({
             "email": email,
             "name": name,
             "hashed_password": hashed_pw,
             "otp_hash": otp_hash,
-            "otp_expiry": datetime.now(timezone.utc) + timedelta(minutes=10),
+            "otp_expiry": now + timedelta(minutes=10),
             "attempts": 0,
-            "created_at": datetime.now(timezone.utc),
+            "created_at": now,
         })
 
         try:
@@ -120,7 +142,7 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
                 detail="No pending verification found. Please sign up again.",
             )
 
-        if datetime.now(timezone.utc) > pending["otp_expiry"]:
+        if datetime.now(timezone.utc) > _to_utc(pending["otp_expiry"]):
             await db.pending_verifications.delete_many({"email": email})
             raise HTTPException(
                 status_code=400,
@@ -134,7 +156,7 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
                 detail="Too many failed attempts. Please sign up again.",
             )
 
-        if not bcrypt.checkpw(body.otp.encode(), pending["otp_hash"].encode()):
+        if not _verify_otp(body.otp, pending["otp_hash"]):
             remaining = 4 - pending["attempts"]
             await db.pending_verifications.update_one(
                 {"email": email}, {"$inc": {"attempts": 1}}
@@ -159,7 +181,6 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
             "last_login": now,
         })
 
-        # Mirror into authorized_users so /auth/login can authenticate them immediately
         if not await db.authorized_users.find_one({"email": email}):
             await db.authorized_users.insert_one({
                 "email": email,
@@ -208,7 +229,7 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
                 detail="No pending verification. Please sign up first.",
             )
 
-        elapsed = (datetime.now(timezone.utc) - pending["created_at"]).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - _to_utc(pending["created_at"])).total_seconds()
         if elapsed < 60:
             wait = int(60 - elapsed)
             raise HTTPException(
@@ -217,7 +238,7 @@ def create_signup_router(db, cookie_sec_fn: Callable, session_expiry_days: int) 
             )
 
         otp = str(random.randint(100000, 999999))
-        otp_hash = bcrypt.hashpw(otp.encode(), bcrypt.gensalt(rounds=12)).decode()
+        otp_hash = _hash_otp(otp)
         now = datetime.now(timezone.utc)
 
         await db.pending_verifications.update_one(

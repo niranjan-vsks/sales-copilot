@@ -48,11 +48,13 @@ export default function LoginPage() {
     setLoading(true);
     setError('');
     try {
+      const { encryptField } = await import('@/lib/crypto');
+      const encryptedPassword = await encryptField(password);
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password: encryptedPassword }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
