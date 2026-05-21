@@ -50,7 +50,7 @@ export default function LoginPage() {
     try {
       const { encryptField } = await import('@/lib/crypto');
       const encryptedPassword = await encryptField(password);
-      const res = await fetch('/api/auth/login', {
+      const res = await fetch(`${BACKEND_URL}/api/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',

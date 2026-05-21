@@ -54,7 +54,7 @@ def send_otp_email(to_email: str, otp: str, name: str) -> None:
 
     msg.attach(MIMEText(html, "html"))
 
-    with smtplib.SMTP(smtp_host, smtp_port) as server:
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
         server.ehlo()
         server.starttls()
         server.login(smtp_user, smtp_password)
