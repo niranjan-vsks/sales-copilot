@@ -889,22 +889,27 @@ async def get_d365_activities(
             user.email, e,
         )
 
-    # Fallback: read from local workflow_executions so the Activities page
-    # still shows data when OAuth / D365 token is not available.
+    # Fallback: merge workflow_executions (manual D365 log) + activity_sheet_log (bulk uploads).
     activity_type = _ENTITY_TO_TYPE.get(entity_set, entity_set.rstrip("s"))
-    query = {
+    exec_query = {
         "user_id": user.user_id,
         "workflow_id": "log-d365-activity",
         "params.activity_type": activity_type,
     }
-    docs = (
-        await db.workflow_executions.find(query, {"_id": 0})
+    exec_docs = (
+        await db.workflow_executions.find(exec_query, {"_id": 0})
         .sort("created_at", -1)
         .limit(top)
         .to_list(top)
     )
+    sheet_docs = (
+        await db.activity_sheet_log.find({"user_id": user.user_id}, {"_id": 0})
+        .sort("logged_at", -1)
+        .limit(top)
+        .to_list(top)
+    )
     records = []
-    for doc in docs:
+    for doc in exec_docs:
         p = doc.get("params", {})
         r = doc.get("result", {})
         created = doc.get("created_at")
@@ -916,7 +921,20 @@ async def get_d365_activities(
             "description": p.get("notes", ""),
             "_local": True,
         })
-    return records
+    for doc in sheet_docs:
+        logged = doc.get("logged_at")
+        records.append({
+            "activityid": doc.get("d365_record_id", ""),
+            "subject": f"Customer Meeting - {doc.get('regarding', '')}",
+            "actualdurationminutes": 60,
+            "createdon": logged.isoformat() if hasattr(logged, "isoformat") else (str(logged) if logged else ""),
+            "description": doc.get("notes_summary", ""),
+            "status": doc.get("d365_status", ""),
+            "_local": True,
+            "_sheet_log": True,
+        })
+    records.sort(key=lambda x: x.get("createdon", ""), reverse=True)
+    return records[:top]
 
 
 # ── Power Automate webhook management (admin only) ────────────────────────────
@@ -1911,21 +1929,17 @@ async def startup_event():
     if not os.environ.get("GROQ_API_KEY"):
         logger.warning("GROQ_API_KEY is not set — AI chat will fail on first request")
 
-    # Bootstrap migration: if no admin exists, promote the earliest authorized_user.
-    # Handles the case where an email-signup user was created before first-admin logic was added.
-    admin_exists = await db.authorized_users.count_documents({"role": "admin"})
-    if not admin_exists:
-        first_user = await db.authorized_users.find_one({}, sort=[("added_at", 1)])
-        if first_user:
-            await db.authorized_users.update_one(
-                {"_id": first_user["_id"]},
-                {"$set": {"role": "admin"}},
-            )
-            await db.users.update_one(
-                {"email": first_user["email"]},
-                {"$set": {"role": "admin"}},
-            )
-            logger.info("Bootstrap: promoted %s to admin (no admins existed)", first_user["email"])
+    # Bootstrap migration: always ensure the first email-signup user is admin.
+    # Previous guard (if not admin_exists) failed when a ghost MS-auth admin existed,
+    # causing the real account owner to stay "rep" indefinitely.
+    first_email_user = await db.users.find_one({"auth_method": "email"}, sort=[("created_at", 1)])
+    if first_email_user:
+        email = first_email_user["email"]
+        auth_entry = await db.authorized_users.find_one({"email": email})
+        if auth_entry and auth_entry.get("role") != "admin":
+            await db.authorized_users.update_one({"email": email}, {"$set": {"role": "admin"}})
+            await db.users.update_one({"email": email}, {"$set": {"role": "admin"}})
+            logger.info("Bootstrap: promoted first email user %s to admin", email)
 
     # ── Session indexes ───────────────────────────────────────────────────────
     await _safe_index(db.user_sessions, "session_token", unique=True)

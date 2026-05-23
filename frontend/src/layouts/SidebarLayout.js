@@ -120,9 +120,9 @@ export default function SidebarLayout() {
         {/* User footer */}
         <div className="border-t border-[#1f2022] p-3">
           <button
-            onClick={() => navigate(user?.role === 'admin' ? '/admin/connections' : '/dashboard')}
+            onClick={() => navigate('/profile')}
             className="flex items-center gap-2 mb-2 w-full hover:opacity-75 transition-opacity"
-            title={user?.role === 'admin' ? 'Settings & Connections' : 'Profile'}
+            title="Account & Settings"
           >
             <div className="w-6 h-6 bg-[#FF4500]/20 border border-[#FF4500]/30 flex items-center justify-center text-[#FF4500] text-[10px] font-bold shrink-0">
               {initials}

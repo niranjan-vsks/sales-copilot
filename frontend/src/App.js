@@ -12,6 +12,7 @@ import ConnectionsPage   from "@/pages/admin/ConnectionsPage";
 import TeamPage          from "@/pages/admin/TeamPage";
 import MonitoringPage    from "@/pages/admin/MonitoringPage";
 import FileManagementPage from "@/pages/admin/FileManagementPage";
+import UserProfilePage   from "@/pages/UserProfilePage";
 
 import AuthGuard         from "@/components/AuthGuard";
 import SidebarLayout     from "@/layouts/SidebarLayout";
@@ -37,6 +38,7 @@ function AppRouter() {
         <Route path="/excel"                 element={<Navigate to="/admin/file-management" replace />} />
         {/* File management APIs require auth only — accessible to all authenticated users */}
         <Route path="/admin/file-management" element={<FileManagementPage />} />
+        <Route path="/profile"               element={<UserProfilePage />} />
       </Route>
 
       {/* Admin-only routes */}
