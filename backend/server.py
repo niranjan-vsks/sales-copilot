@@ -137,6 +137,40 @@ class SettingsUpdateRequest(BaseModel):
     dry_run_mode: Optional[bool] = None
 
 
+class UpdateMeRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=8)
+
+
+class UpdatePreferencesRequest(BaseModel):
+    default_activity_type: Optional[str] = None
+    default_duration_minutes: Optional[int] = None
+    timezone: Optional[str] = None
+    notify_email: Optional[bool] = None
+    notify_email_address: Optional[str] = None
+    notify_telegram: Optional[bool] = None
+    telegram_bot_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
+
+
+class CalendarEventRequest(BaseModel):
+    subject: str
+    start_time: str   # ISO-8601
+    end_time: str     # ISO-8601
+    location: Optional[str] = None
+    notes: Optional[str] = None
+    timezone: Optional[str] = "UTC"
+
+
+class TelegramConfigRequest(BaseModel):
+    bot_token: str
+    chat_id: str
+
+
 class WebhookUrlRequest(BaseModel):
     url: str
 
@@ -322,6 +356,45 @@ async def logout(request: Request, response: Response):
     if session_token:
         await db.user_sessions.delete_one({"session_token": session_token})
     response.delete_cookie("session_token", path="/", **_cookie_sec())
+    return {"ok": True}
+
+
+@api_router.patch("/auth/me")
+async def update_me(body: UpdateMeRequest, request: Request):
+    user = await require_auth(request)
+    if not body.name or not body.name.strip():
+        raise HTTPException(status_code=400, detail="Name cannot be empty")
+    name = body.name.strip()
+    await db.users.update_one({"user_id": user.user_id}, {"$set": {"name": name}})
+    await db.authorized_users.update_one({"email": user.email}, {"$set": {"display_name": name}})
+    return {"ok": True, "name": name}
+
+
+@limiter.limit("5/minute")
+@api_router.post("/auth/change-password")
+async def change_password(body: ChangePasswordRequest, request: Request):
+    user = await require_auth(request)
+    auth_user = await db.authorized_users.find_one({"email": user.email})
+    if not auth_user or not auth_user.get("password_hash"):
+        raise HTTPException(status_code=400, detail="Password change is not available for Microsoft-authenticated accounts")
+    try:
+        current_pw = _decrypt_payload(body.current_password)
+        new_pw = _decrypt_payload(body.new_password)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid request format")
+    match = await asyncio.get_event_loop().run_in_executor(
+        None, bcrypt.checkpw, current_pw.encode("utf-8"), auth_user["password_hash"].encode("utf-8")
+    )
+    if not match:
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    if len(new_pw) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    new_hash = await asyncio.get_event_loop().run_in_executor(
+        None, bcrypt.hashpw, new_pw.encode("utf-8"), bcrypt.gensalt()
+    )
+    await db.authorized_users.update_one(
+        {"email": user.email}, {"$set": {"password_hash": new_hash.decode("utf-8")}}
+    )
     return {"ok": True}
 
 
@@ -995,6 +1068,132 @@ async def save_browser_cookies(body: BrowserCookiesRequest, request: Request):
     return {"ok": True}
 
 
+# ── User Preferences ─────────────────────────────────────────────────────────
+
+@api_router.get("/user/preferences")
+async def get_preferences(request: Request):
+    user = await require_auth(request)
+    prefs = await db.user_preferences.find_one({"user_id": user.user_id}, {"_id": 0})
+    return prefs or {}
+
+
+@api_router.patch("/user/preferences")
+async def update_preferences(body: UpdatePreferencesRequest, request: Request):
+    user = await require_auth(request)
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if updates:
+        updates["updated_at"] = datetime.now(timezone.utc)
+        await db.user_preferences.update_one(
+            {"user_id": user.user_id},
+            {"$set": {"user_id": user.user_id, **updates}},
+            upsert=True,
+        )
+    return {"ok": True}
+
+
+# ── Activity Types Config ─────────────────────────────────────────────────────
+
+async def _seed_activity_types() -> None:
+    """Seed activity_types collection with defaults if empty."""
+    defaults = [
+        {"id": "appointment", "label": "Appointment", "enabled": True, "order": 1},
+        {"id": "phonecall",   "label": "Phone Call",  "enabled": False, "order": 2},
+        {"id": "task",        "label": "Task",         "enabled": False, "order": 3},
+    ]
+    for d in defaults:
+        await db.activity_types.update_one({"id": d["id"]}, {"$setOnInsert": d}, upsert=True)
+
+
+@api_router.get("/config/activity-types")
+async def get_activity_types(request: Request):
+    await require_auth(request)
+    types = await db.activity_types.find({"enabled": True}, {"_id": 0}).sort("order", 1).to_list(50)
+    if not types:
+        await _seed_activity_types()
+        types = await db.activity_types.find({"enabled": True}, {"_id": 0}).sort("order", 1).to_list(50)
+    return types
+
+
+# ── Calendar (Microsoft Graph) ────────────────────────────────────────────────
+
+@api_router.post("/calendar/create-event")
+async def create_calendar_event(body: CalendarEventRequest, request: Request):
+    user = await require_auth(request)
+    try:
+        access_token = await get_access_token(user.user_id, db)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Microsoft account not connected: {exc}")
+
+    import httpx
+    event_payload = {
+        "subject": body.subject,
+        "body": {"contentType": "text", "content": body.notes or ""},
+        "start": {"dateTime": body.start_time, "timeZone": body.timezone or "UTC"},
+        "end":   {"dateTime": body.end_time,   "timeZone": body.timezone or "UTC"},
+        "location": {"displayName": body.location or ""},
+    }
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            "https://graph.microsoft.com/v1.0/me/events",
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            json=event_payload,
+            timeout=15,
+        )
+    if r.status_code not in (200, 201):
+        raise HTTPException(status_code=502, detail=f"Calendar API error: {r.text[:300]}")
+    event = r.json()
+    return {"ok": True, "event_id": event.get("id"), "web_link": event.get("webLink")}
+
+
+# ── Telegram Notifications ────────────────────────────────────────────────────
+
+@api_router.post("/notifications/telegram/configure")
+async def configure_telegram(body: TelegramConfigRequest, request: Request):
+    user = await require_auth(request)
+    import httpx
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"https://api.telegram.org/bot{body.bot_token}/getMe", timeout=10
+        )
+    if r.status_code != 200 or not r.json().get("ok"):
+        raise HTTPException(status_code=400, detail="Invalid bot token — verify with BotFather")
+    bot_info = r.json()["result"]
+    await db.user_preferences.update_one(
+        {"user_id": user.user_id},
+        {"$set": {
+            "user_id": user.user_id,
+            "telegram_bot_token": body.bot_token,
+            "telegram_chat_id": body.chat_id,
+            "telegram_enabled": True,
+            "updated_at": datetime.now(timezone.utc),
+        }},
+        upsert=True,
+    )
+    return {"ok": True, "bot_username": bot_info.get("username")}
+
+
+@api_router.get("/notifications/telegram/status")
+async def telegram_status(request: Request):
+    user = await require_auth(request)
+    prefs = await db.user_preferences.find_one({"user_id": user.user_id}, {"_id": 0})
+    configured = bool(prefs and prefs.get("telegram_bot_token") and prefs.get("telegram_chat_id"))
+    return {
+        "configured": configured,
+        "enabled": (prefs or {}).get("telegram_enabled", False),
+        "bot_username": None,  # could verify live if needed
+    }
+
+
+@api_router.delete("/notifications/telegram/configure")
+async def remove_telegram(request: Request):
+    user = await require_auth(request)
+    await db.user_preferences.update_one(
+        {"user_id": user.user_id},
+        {"$unset": {"telegram_bot_token": "", "telegram_chat_id": "", "telegram_enabled": ""}},
+    )
+    return {"ok": True}
+
+
 # ============== Team Admin Routes ==============
 
 @api_router.get("/team")
@@ -1067,11 +1266,16 @@ async def update_settings(body: SettingsUpdateRequest, request: Request):
 # ============== Monitoring Admin Routes ==============
 
 @api_router.get("/monitoring/summary")
-async def monitoring_summary(request: Request):
+async def monitoring_summary(
+    request: Request,
+    days: int = Query(default=30, ge=1, le=365),
+):
     await require_admin(request)
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    range_start = now - timedelta(days=days)
 
+    # ── Today stats ───────────────────────────────────────────────────────────
     workflows_today = await db.workflow_executions.count_documents(
         {"created_at": {"$gte": today_start}}
     )
@@ -1080,17 +1284,75 @@ async def monitoring_summary(request: Request):
     )
     success_rate = round(success_today / workflows_today * 100, 1) if workflows_today else 0.0
 
+    # ── Date-range stats ──────────────────────────────────────────────────────
+    range_query = {"created_at": {"$gte": range_start}}
+    total_range  = await db.workflow_executions.count_documents(range_query)
+    failed_range = await db.workflow_executions.count_documents({**range_query, "status": "failed"})
+    pending_range = await db.workflow_executions.count_documents({**range_query, "status": "pending"})
+
+    # ── Per-user breakdown ────────────────────────────────────────────────────
+    pipeline_user = [
+        {"$match": range_query},
+        {"$group": {"_id": "$user_id", "total": {"$sum": 1},
+                    "success": {"$sum": {"$cond": [{"$eq": ["$status", "success"]}, 1, 0]}},
+                    "failed":  {"$sum": {"$cond": [{"$eq": ["$status", "failed"]},  1, 0]}}}},
+        {"$sort": {"total": -1}},
+        {"$limit": 20},
+    ]
+    user_rows = await db.workflow_executions.aggregate(pipeline_user).to_list(20)
+    # Enrich with names
+    user_ids = [r["_id"] for r in user_rows if r["_id"]]
+    users_map = {}
+    if user_ids:
+        user_docs = await db.users.find(
+            {"user_id": {"$in": user_ids}}, {"user_id": 1, "name": 1, "email": 1, "_id": 0}
+        ).to_list(len(user_ids))
+        users_map = {u["user_id"]: u.get("name") or u.get("email", u["user_id"]) for u in user_docs}
+    per_user = [
+        {"user": users_map.get(r["_id"], r["_id"]), "total": r["total"],
+         "success": r["success"], "failed": r["failed"]}
+        for r in user_rows
+    ]
+
+    # ── Activity type distribution ────────────────────────────────────────────
+    pipeline_type = [
+        {"$match": range_query},
+        {"$group": {"_id": "$params.activity_type", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]
+    type_rows = await db.workflow_executions.aggregate(pipeline_type).to_list(20)
+    activity_type_dist = [{"type": r["_id"] or "unknown", "count": r["count"]} for r in type_rows]
+
+    # ── Top accounts ──────────────────────────────────────────────────────────
+    pipeline_acct = [
+        {"$match": range_query},
+        {"$group": {"_id": "$params.account", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 10},
+    ]
+    acct_rows = await db.workflow_executions.aggregate(pipeline_acct).to_list(10)
+    top_accounts = [{"account": r["_id"] or "—", "count": r["count"]} for r in acct_rows if r["_id"]]
+
+    # ── Recent executions (with user name) ────────────────────────────────────
     recent = await db.workflow_executions.find({}, {"_id": 0}) \
-        .sort("created_at", -1).limit(10).to_list(10)
+        .sort("created_at", -1).limit(50).to_list(50)
     for r in recent:
         if isinstance(r.get("created_at"), datetime):
             r["created_at"] = r["created_at"].isoformat()
         if isinstance(r.get("completed_at"), datetime):
             r["completed_at"] = r["completed_at"].isoformat()
+        r["user_name"] = users_map.get(r.get("user_id"), r.get("user_id", "—"))
 
     return {
         "workflows_today": workflows_today,
         "success_rate": success_rate,
+        "total_range": total_range,
+        "failed_range": failed_range,
+        "pending_range": pending_range,
+        "days": days,
+        "per_user": per_user,
+        "activity_type_dist": activity_type_dist,
+        "top_accounts": top_accounts,
         "recent_executions": recent,
     }
 
@@ -1969,6 +2231,13 @@ async def startup_event():
     await _safe_index(db.uploaded_files, [("user_id", 1), ("uploaded_at", -1)])
     await _safe_index(db.activity_rules, [("user_id", 1), ("created_at", -1)])
     await _safe_index(db.app_knowledge_base, [("user_id", 1), ("timestamp", -1)])
+
+    # ── User preferences ──────────────────────────────────────────────────────
+    await _safe_index(db.user_preferences, "user_id", unique=True)
+
+    # ── Seed config collections ───────────────────────────────────────────────
+    await _seed_activity_types()
+    logger.info("Config collections seeded.")
     await _safe_index(db.app_knowledge_base, [("user_id", 1), ("event_type", 1)])
 
     logger.info("MongoDB indexes ensured.")

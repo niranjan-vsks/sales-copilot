@@ -52,6 +52,7 @@ export default function ActivitiesPage() {
   const [search, setSearch]               = useState('');
   const [entitySet, setEntitySet]         = useState('appointments');
   const [executions, setExecutions]       = useState([]);
+  const [sheetLogs, setSheetLogs]         = useState([]);
   const [d365OrgUrl, setD365OrgUrl]       = useState('');
   const [selectedActivity, setSelectedActivity] = useState(null);
   const [detailOpen, setDetailOpen]       = useState(false);
@@ -69,6 +70,9 @@ export default function ActivitiesPage() {
     api.get('/workflows/executions?limit=100&workflow_id=log-d365-activity')
       .then((d) => setExecutions(d.items || []))
       .catch(() => {});
+    api.get('/activity-sheets/history')
+      .then((d) => setSheetLogs(d?.data?.entries || []))
+      .catch(() => {});
     api.get('/config')
       .then((cfg) => setD365OrgUrl(cfg.d365_org_url || ''))
       .catch(() => {});
@@ -83,8 +87,15 @@ export default function ActivitiesPage() {
     );
   });
 
-  const successCount = executions.filter((e) => e.status === 'success').length;
-  const successRate  = executions.length ? Math.round((successCount / executions.length) * 100) : 0;
+  const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  const execSuccess  = executions.filter((e) => e.status === 'success').length;
+  const sheetSuccess = sheetLogs.filter((e) => e.d365_status === 'success').length;
+  const totalLogged  = executions.length + sheetLogs.length;
+  const weekLogged   =
+    executions.filter((e) => Date.now() - new Date(e.created_at).getTime() < WEEK_MS).length +
+    sheetLogs.filter((e) => Date.now() - new Date(e.logged_at).getTime() < WEEK_MS).length;
+  const successCount = execSuccess + sheetSuccess;
+  const successRate  = totalLogged ? Math.round((successCount / totalLogged) * 100) : 0;
 
   const openDetail = (activity) => {
     setSelectedActivity(activity);
@@ -113,7 +124,7 @@ export default function ActivitiesPage() {
         <ActivitySquare className="w-6 h-6 text-[#FF4500]" />
         <div>
           <h1 className="font-['Space_Grotesk'] text-2xl font-bold text-[#F2F3F5]">Activities</h1>
-          <p className="text-[#9CA3AF] text-sm">Dynamics 365 activity history and execution log.</p>
+          <p className="text-[#9CA3AF] text-sm">Your logged interactions and activity history.</p>
         </div>
       </div>
 
@@ -124,15 +135,8 @@ export default function ActivitiesPage() {
         variants={{ hidden: {}, visible: { transition: { staggerChildren: 0.08 } } }}
         className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8"
       >
-        <StatCard label="Total Logged"  value={executions.length}   sub="via Sales Copilot" />
-        <StatCard
-          label="This Week"
-          value={executions.filter((e) => {
-            const d = new Date(e.created_at);
-            return Date.now() - d.getTime() < 7 * 24 * 60 * 60 * 1000;
-          }).length}
-          sub="last 7 days"
-        />
+        <StatCard label="Total Logged"  value={totalLogged}  sub="via Sales Copilot" />
+        <StatCard label="This Week"     value={weekLogged}   sub="last 7 days" />
         <StatCard label="Success Rate" value={`${successRate}%`} sub={`${successCount} succeeded`} />
         <StatCard label="In D365"      value={activities.length}    sub={`${entitySet} records`} />
       </motion.div>

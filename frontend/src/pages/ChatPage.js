@@ -10,7 +10,7 @@ import api from '@/lib/api';
 const SUGGESTED_PROMPTS = [
   'Is my webhook connected?',
   'What file did I upload last?',
-  'Log a phone call with Visaka Industries, 30 minutes, Q1 review',
+  'Log a 30-minute phone call about Q1 review',
   'Show my recent activities',
 ];
 
@@ -207,7 +207,7 @@ export default function ChatPage() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <MessageSquare className="w-5 h-5 text-[#FF4500]" />
-            <h1 className="font-['Space_Grotesk'] text-lg font-bold text-[#F2F3F5]">AI Chat</h1>
+            <h1 className="font-['Space_Grotesk'] text-lg font-bold text-[#F2F3F5]">AI Agent</h1>
           </div>
 
           {/* Context indicator */}
