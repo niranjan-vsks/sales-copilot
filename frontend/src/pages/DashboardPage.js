@@ -29,12 +29,12 @@ import AccountSearchInput from '@/components/AccountSearchInput';
 
 // ── Workflow cards ────────────────────────────────────────────────────────────
 const WORKFLOW_CARDS = [
-  { id: 'log-d365-activity',   name: 'Log D365 Activity',   description: 'Auto-create phone calls, tasks and interactions directly in Dynamics 365.', icon: ClipboardList, status: 'live' },
-  { id: 'sync-emails',         name: 'Sync Emails',         description: 'Sync Outlook emails with D365 contact records automatically.',               icon: Mail,          status: 'coming_soon' },
-  { id: 'search-leads',        name: 'Search Leads',        description: 'Find qualified leads using AI-powered prospecting.',                         icon: Search,        status: 'coming_soon' },
-  { id: 'update-calendar',     name: 'Update Calendar',     description: 'Sync meetings between Outlook Calendar and D365.',                           icon: Calendar,      status: 'coming_soon' },
-  { id: 'process-files',       name: 'Process Files',       description: 'Extract and log data from uploaded documents.',                              icon: FileText,      status: 'live',        route: '/admin/file-management' },
-  { id: 'alert-notifications', name: 'Alert Notifications', description: 'Get notified of key CRM events and opportunities.',                          icon: Bell,          status: 'coming_soon' },
+  { id: 'log-d365-activity',   name: 'Log Activity',        description: 'Create activity records directly in Dynamics 365 — meetings, calls, and tasks.', icon: ClipboardList, status: 'live' },
+  { id: 'track-emails',        name: 'Track Emails',        description: 'Link Outlook email threads to D365 contact records automatically.',               icon: Mail,          status: 'coming_soon' },
+  { id: 'search-leads',        name: 'Search Leads',        description: 'Find and qualify leads using AI-powered prospecting.',                            icon: Search,        status: 'coming_soon' },
+  { id: 'update-calendar',     name: 'Update Calendar',     description: 'Add confirmed meetings to your Outlook Calendar from logged activities.',          icon: Calendar,      status: 'live',        route: null, action: 'calendar' },
+  { id: 'process-files',       name: 'Process Files',       description: 'Bulk-log activities from spreadsheets and extract account data from documents.',   icon: FileText,      status: 'live',        route: '/admin/file-management' },
+  { id: 'smart-alerts',        name: 'Smart Alerts',        description: 'Receive real-time notifications on Telegram or email for key CRM events.',         icon: Bell,          status: 'coming_soon' },
 ];
 
 // ── Field visibility rules per activity type ─────────────────────────────────
@@ -87,18 +87,103 @@ function ExecStatusBadge({ status }) {
 // ── Shared input class ────────────────────────────────────────────────────────
 const INPUT_CLS = 'bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] placeholder:text-[#9CA3AF]/60 rounded-none h-9 text-sm focus-visible:ring-[#FF4500] focus-visible:border-[#FF4500]';
 
+// ── Calendar Dialog ───────────────────────────────────────────────────────────
+function CalendarDialog({ open, onClose }) {
+  const [submitting, setSubmitting] = useState(false);
+  const [form, setForm] = useState({ subject: '', start_time: '', end_time: '', location: '', notes: '' });
+
+  const set = (k) => (e) => setForm((p) => ({ ...p, [k]: e.target.value }));
+
+  const submit = async () => {
+    if (!form.subject || !form.start_time || !form.end_time) {
+      toast.error('Subject, start time, and end time are required');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await api.post('/calendar/create-event', {
+        ...form,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      });
+      toast.success('Calendar event created', {
+        description: res.web_link ? 'View in Outlook' : 'Event added to your calendar.',
+        action: res.web_link ? { label: 'Open', onClick: () => window.open(res.web_link, '_blank') } : undefined,
+      });
+      setForm({ subject: '', start_time: '', end_time: '', location: '', notes: '' });
+      onClose();
+    } catch (err) {
+      toast.error('Failed to create event', { description: err.message });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="bg-[#141416] border border-[#1f2022] text-[#F2F3F5] max-w-md rounded-none p-0 gap-0">
+        <DialogHeader className="px-6 pt-6 pb-4 border-b border-[#1f2022]">
+          <div className="flex items-center gap-3 mb-1">
+            <Calendar className="w-5 h-5 text-[#FF4500]" />
+            <DialogTitle className="font-['Space_Grotesk'] text-lg font-bold text-[#F2F3F5]">
+              Add to Outlook Calendar
+            </DialogTitle>
+          </div>
+          <DialogDescription className="text-[#9CA3AF] text-sm">
+            Create a calendar event via Microsoft Graph.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="px-6 py-5 space-y-4">
+          <div>
+            <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Subject <span className="text-[#ef4444]">*</span></Label>
+            <Input value={form.subject} onChange={set('subject')} placeholder="e.g. Customer Meeting — Acme Corp" className={INPUT_CLS} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Start <span className="text-[#ef4444]">*</span></Label>
+              <Input type="datetime-local" value={form.start_time} onChange={set('start_time')} className={`${INPUT_CLS} [color-scheme:dark]`} />
+            </div>
+            <div>
+              <Label className="text-xs text-[#9CA3AF] mb-1.5 block">End <span className="text-[#ef4444]">*</span></Label>
+              <Input type="datetime-local" value={form.end_time} onChange={set('end_time')} className={`${INPUT_CLS} [color-scheme:dark]`} />
+            </div>
+          </div>
+          <div>
+            <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Location <span className="text-[#9CA3AF]/50">(optional)</span></Label>
+            <Input value={form.location} onChange={set('location')} placeholder="Room, city, or online" className={INPUT_CLS} />
+          </div>
+          <div>
+            <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Notes <span className="text-[#9CA3AF]/50">(optional)</span></Label>
+            <Textarea value={form.notes} onChange={set('notes')} placeholder="Agenda or meeting notes…" rows={3}
+              className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] placeholder:text-[#9CA3AF]/60 rounded-none text-sm resize-none focus-visible:ring-[#FF4500] focus-visible:border-[#FF4500]" />
+          </div>
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#1f2022]">
+            <Button type="button" variant="ghost" size="sm" onClick={onClose}
+              className="text-[#9CA3AF] border border-[#1f2022] hover:bg-[#1f2022] rounded-none text-xs h-8">Cancel</Button>
+            <Button size="sm" disabled={submitting} onClick={submit}
+              className="bg-[#FF4500] hover:bg-[#e63e00] text-white rounded-none text-xs h-8 px-4 disabled:opacity-60">
+              {submitting ? 'Creating…' : 'Create Event'}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function DashboardPage() {
   const navigate = useNavigate();
   const [user, setUser]               = useState(null);
-  const [dialogOpen, setDialogOpen]   = useState(false);
-  const [submitting, setSubmitting]   = useState(false);
-  const [executions, setExecutions]   = useState([]);
-  const [execLoading, setExecLoading] = useState(true);
-  const [peopleOpen, setPeopleOpen]   = useState(false);
-  const [detailOpen, setDetailOpen]   = useState(false);
-  const [selectedExec, setSelectedExec] = useState(null);
-  const [mdmIds, setMdmIds]           = useState({ idg: '', isg: '' });
+  const [dialogOpen, setDialogOpen]       = useState(false);
+  const [calendarOpen, setCalendarOpen]   = useState(false);
+  const [submitting, setSubmitting]       = useState(false);
+  const [executions, setExecutions]       = useState([]);
+  const [execLoading, setExecLoading]     = useState(true);
+  const [peopleOpen, setPeopleOpen]       = useState(false);
+  const [detailOpen, setDetailOpen]       = useState(false);
+  const [selectedExec, setSelectedExec]   = useState(null);
+  const [mdmIds, setMdmIds]               = useState({ idg: '', isg: '' });
+  const [activityTypes, setActivityTypes] = useState([{ id: 'appointment', label: 'Appointment' }]);
 
   const { register, handleSubmit, formState: { errors }, setValue, watch, reset } = useForm({
     resolver: zodResolver(activitySchema),
@@ -121,6 +206,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     api.get('/auth/me').then(setUser).catch(() => {});
+    api.get('/config/activity-types').then(setActivityTypes).catch(() => {});
     loadExecutions();
   }, [loadExecutions]);
 
@@ -151,7 +237,7 @@ export default function DashboardPage() {
         });
       } else if (result.status === 'pending') {
         toast.info('Activity submitted', {
-          description: 'Webhook accepted. Update Power Automate to return the record ID for full confirmation.',
+          description: 'Awaiting confirmation from your connected workflow.',
         });
       } else {
         toast.success('Activity logged', { description: 'Activity recorded.' });
@@ -174,7 +260,7 @@ export default function DashboardPage() {
       {/* Header */}
       <div className="mb-8">
         <h1 className="font-['Space_Grotesk'] text-2xl font-bold text-[#F2F3F5] mb-1">{greeting}</h1>
-        <p className="text-[#9CA3AF] text-sm">Your Dynamics 365 workflows, ready to run.</p>
+        <p className="text-[#9CA3AF] text-sm">Your sales workflows, ready to run.</p>
       </div>
 
       {/* Workflow cards */}
@@ -182,7 +268,7 @@ export default function DashboardPage() {
         variants={containerVariants} initial="hidden" animate="visible"
         className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-10"
       >
-        {WORKFLOW_CARDS.map(({ id, name, description, icon: Icon, status, route }) => (
+        {WORKFLOW_CARDS.map(({ id, name, description, icon: Icon, status, route, action }) => (
           <motion.div
             key={id} variants={cardVariants}
             whileHover={{ y: -3, boxShadow: '0 8px 30px rgba(255,69,0,0.15)' }}
@@ -208,15 +294,22 @@ export default function DashboardPage() {
             </div>
             <div className="mt-auto">
               {status === 'live' ? (
-                <Button onClick={route ? () => navigate(route) : openDialog} size="sm"
-                  className="w-full bg-[#FF4500] hover:bg-[#e63e00] text-white rounded-none h-8 text-xs font-medium transition-colors">
+                <Button
+                  onClick={
+                    route ? () => navigate(route)
+                    : action === 'calendar' ? () => setCalendarOpen(true)
+                    : openDialog
+                  }
+                  size="sm"
+                  className="w-full bg-[#FF4500] hover:bg-[#e63e00] text-white rounded-none h-8 text-xs font-medium transition-colors"
+                >
                   <Play className="w-3 h-3 mr-1.5" /> Run
                 </Button>
               ) : (
                 <Button
                   size="sm"
-                  onClick={() => toast.info(`${name} — Coming Soon`, {
-                    description: 'This feature is actively being developed. You\'ll be notified when it\'s ready.',
+                  onClick={() => toast.info(`${name}`, {
+                    description: 'This feature is in development. You\'ll be notified when it\'s ready.',
                   })}
                   className="w-full bg-transparent border border-[#1f2022] text-[#9CA3AF] rounded-none h-8 text-xs font-medium hover:border-[#FF4500]/30 hover:text-[#F2F3F5] transition-colors"
                 >
@@ -330,15 +423,13 @@ export default function DashboardPage() {
                 <div>
                   <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Activity Type</Label>
                   <Select onValueChange={(v) => setValue('activity_type', v)} defaultValue="appointment">
-                    <SelectTrigger
-                      className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] rounded-none h-9 text-sm focus:ring-[#FF4500] focus:border-[#FF4500]"
-                    >
+                    <SelectTrigger className="bg-[#0f0f10] border-[#1f2022] text-[#F2F3F5] rounded-none h-9 text-sm focus:ring-[#FF4500] focus:border-[#FF4500]">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent className="bg-[#141416] border-[#1f2022] text-[#F2F3F5] rounded-none">
-                      <SelectItem value="phonecall" disabled className="focus:bg-[#1f2022] opacity-40 cursor-not-allowed">Phone Call</SelectItem>
-                      <SelectItem value="task"      disabled className="focus:bg-[#1f2022] opacity-40 cursor-not-allowed">Task</SelectItem>
-                      <SelectItem value="appointment"        className="focus:bg-[#1f2022]">Appointment</SelectItem>
+                      {activityTypes.map((t) => (
+                        <SelectItem key={t.id} value={t.id} className="focus:bg-[#1f2022]">{t.label}</SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -476,11 +567,11 @@ export default function DashboardPage() {
               <CollapsibleContent className="mt-3 space-y-3">
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Primary Lenovo Attendee</Label>
+                    <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Primary Attendee</Label>
                     <Input {...register('primary_attendee')} placeholder="Name or email" className={INPUT_CLS} />
                   </div>
                   <div>
-                    <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Other Lenovo Attendees</Label>
+                    <Label className="text-xs text-[#9CA3AF] mb-1.5 block">Additional Attendees</Label>
                     <Input {...register('other_attendees')} placeholder="Comma-separated" className={INPUT_CLS} />
                   </div>
                 </div>
@@ -543,6 +634,9 @@ export default function DashboardPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* ── Calendar Event Dialog ──────────────────────────────────────────── */}
+      <CalendarDialog open={calendarOpen} onClose={() => setCalendarOpen(false)} />
 
       {/* ── Execution Detail Dialog ─────────────────────────────────────────── */}
       <Dialog open={detailOpen} onOpenChange={setDetailOpen}>

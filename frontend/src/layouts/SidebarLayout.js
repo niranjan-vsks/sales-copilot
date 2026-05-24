@@ -15,7 +15,7 @@ import api from '@/lib/api';
 
 const NAV_ITEMS = [
   { to: '/dashboard',          label: 'Dashboard',   icon: LayoutDashboard },
-  { to: '/chat',               label: 'AI Chat',     icon: MessageSquare },
+  { to: '/chat',               label: 'AI Agent',    icon: MessageSquare },
   { to: '/activities',         label: 'Activities',  icon: ActivitySquare },
 ];
 
