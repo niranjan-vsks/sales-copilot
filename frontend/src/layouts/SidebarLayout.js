@@ -81,7 +81,7 @@ export default function SidebarLayout() {
                   <Icon className="w-4 h-4 shrink-0" />
                   <span className="truncate">{label}</span>
                   {badge && (
-                    <span className="ml-auto px-1.5 py-0.5 text-[9px] uppercase tracking-wider font-semibold border border-[#FF4500]/40 bg-[#FF4500]/8 text-[#FF4500] shrink-0">
+                    <span className="ml-auto px-1.5 py-0.5 text-[9px] uppercase tracking-wider font-semibold border border-[#1f2022] bg-[#1f2022]/60 text-[#9CA3AF] shrink-0">
                       {badge}
                     </span>
                   )}

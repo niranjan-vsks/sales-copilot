@@ -33,7 +33,7 @@ It's running as a live pilot inside a Fortune 500 sales org, integrated directly
 - 📈 **Activities & monitoring dashboards** — success-rate stats, execution history, and admin-level visibility into every workflow that's run.
 - 🔔 **Telegram + calendar hooks** — optional Telegram notifications on completed workflows, plus one-click calendar event creation.
 - 🔐 **Enterprise auth** — Microsoft SSO (Entra ID) alongside email/password signup, bcrypt-hashed credentials, encrypted token storage, and rate-limited endpoints.
-- 🎙️ **Voice Agent** *(in refinement — targeting V3, Sept 2026)* — a call-listening pipeline that transcribes sales calls (STT), extracts a structured PRD/onboarding summary, resolves any newly mentioned account against the account repository by unique ID, and logs the activity straight into D365 with zero manual entry. A placeholder screen for this is already wired into the app.
+- 🎙️ **Voice Agent** *(rolling out — V3)* — a call-listening pipeline that transcribes sales calls (STT), extracts a structured PRD/onboarding summary, resolves any newly mentioned account against the account repository by unique ID, and logs the activity straight into D365 with zero manual entry.
 
 ## Architecture
 
