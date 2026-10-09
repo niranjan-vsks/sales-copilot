@@ -13,7 +13,7 @@ Update rules: [DOCTRINE.md §6](DOCTRINE.md). Edit only your phase's rows plus t
 | Phase | Name | Status | Agent / branch | Depends on | Parallel with |
 |---|---|---|---|---|---|
 | P0 | Groundwork | IN PROGRESS | Claude Opus 5.5 / `revamp/p0-groundwork` (worktree `../loop-p0`) | — | — |
-| P1 | Truthful Logging | IN PROGRESS | Claude Sonnet 5.5 / `revamp/p1-truthful-logging` (worktree `../loop-p1`) | P0 | P3 |
+| P1 | Truthful Logging | GATE | Claude Sonnet 5.5 / `revamp/p1-truthful-logging` (worktree `../loop-p1`) | P0 | P3 |
 | P2 | Universal Connector | NOT STARTED | — | P0, P1 | P3 |
 | P3 | Model Layer | NOT STARTED | — | P0 | P1, P2 |
 | P4 | MCP Bridge | NOT STARTED | — | P2, P3 | — |
@@ -51,12 +51,13 @@ Status values: `NOT STARTED` · `IN PROGRESS` · `GATE` (building done, running 
 - [x] P1.T7 Legacy URL detection
 - [x] P1.T8 CORS PATCH + rate-limit decorator order
 - [x] P1.T9 Frontend truth
-- [ ] P1.G Gates G1–G7
+- [ ] P1.G Gates G1–G7 (G1–G6 green; G7 see log)
 
 ---
 
 ## Findings closed
 (ID — phase — commit) e.g. `B12 — P1 — abc1234`
+B01, B02, B03, B04, B05, B06, B07, B08, B09, B10, B12, B13, B25 — P1 — closed in `e165266` (backend) + `7a2fdc3` (frontend) + `999e5cf` (hardening); B11 surfaced in the UI (legacy host flag + save rejection) — P1 (root cause still P0)
 
 ---
 
@@ -86,6 +87,7 @@ Source: Railway CLI `deployment list` (MCP not loaded in session; CLI is logged 
 - New env (P2): none required; flow URL/key are stored encrypted in Mongo via the admin UI. `DEFAULT_TIMEZONE` optional (default `Asia/Kolkata`, P1).
 
 ## Decisions (append-only)
+- 2026-10-10 — P1: legacy `pending` log entries/executions count as `unverified` (resend offered). Chat refuses an ambiguous account. OAuth/browser transports are opt-in flags in `bot_config` (default off, no UI). Extra codes `INTERNAL_ERROR`, `HTTP_<n>`. `D365_SCOPES` → `d365_scopes()`. Completed-status pairs use Dataverse defaults until D365_SCHEMA.md is filled (U5).
 - 2026-10-09 — Lenovo IT approval is not available. In-tenant execution via a Power Automate flow running as the user is the Lenovo path. No consent/DLP circumvention.
 - 2026-10-09 — "Power Automate MCP" means the Dataverse MCP server. It needs tenant admin consent → used only for consenting tenants (P4). Copilot Studio route is a spike (P4.T4).
 - 2026-10-09 — Groq stays default; Gemini activates by adding `GEMINI_API_KEY`; Groq is the fallback.
