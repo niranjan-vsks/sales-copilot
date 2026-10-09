@@ -32,7 +32,7 @@ Status values: `NOT STARTED` · `IN PROGRESS` · `GATE` (building done, running 
 - [x] P0.T2 Test harness (`tests/conftest.py`, smoke tests)
 - [x] P0.T3 Fake flow (`tests/fakes/fake_flow.py`) + tests
 - [x] P0.T4 D365 probe script (`scripts/d365_probe.py`)
-- [ ] P0.T5 Dev DB facts + `docs/revamp/private/` folder
+- [x] P0.T5 Dev DB facts + `docs/revamp/private/` folder
 - [ ] P0.T6 Evidence collection (prod DB read-only — needs user go-ahead)
 - [ ] P0.U1 Railway webhook/D365 logs + auto-deploy branch
 - [ ] P0.U2 Flow run history + current trigger URL host
@@ -62,6 +62,10 @@ Source: Railway CLI `deployment list` (MCP not loaded in session; CLI is logged 
 
 ## Environment facts
 - Local backend runs must use `DB_NAME=sales_copilot_dev` (never the prod DB).
+- **Danger (P0 finding):** the main checkout's `.env` points at the **production** Atlas cluster with `DB_NAME=sales_copilot` (same host + DB name as Railway prod). Always override on the command line: `APP_ENVIRONMENT=dev DB_NAME=sales_copilot_dev python -m uvicorn server:app --port 8000` (`load_dotenv` does not override variables already set). Local `.env` has `APP_ENVIRONMENT=development`, which the code does **not** treat as dev (`APP_ENV == 'dev'`) — always pass `APP_ENVIRONMENT=dev`.
+- Confirm the target before starting the server, host and DB only (never print the URL): `python -c "import os;from dotenv import dotenv_values as d;from urllib.parse import urlsplit as u;v=d('.env');print(u(v['MONGO_URL']).hostname, os.environ.get('DB_NAME', v.get('DB_NAME')))"`
+- Tests: `python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt`, then `python -m pytest tests -q` from the repo root (in-memory mongomock; never touches Atlas). Fake flow: `python -m uvicorn tests.fakes.fake_flow:app --port 8765`. Probe: `scripts/d365_probe.py` (reads `docs/revamp/private/.env.probe`; use `--env-file <abs path>` from a worktree).
+- `docs/revamp/private/` exists only in the main checkout. The main checkout is on branch `backup/pre-clean-main-2026-08-11` (unrelated history), whose `.gitignore` lacks the rule, so `docs/revamp/private/` was also added to `.git/info/exclude` (local, all worktrees).
 - `gh` CLI is not authenticated; ship with plain `git push`.
 - Railway auto-deploy branch: `main` for both `sales-copilot-api` and `sales-copilot-ui` (confirmed P0 from deployment metadata; project `outstanding-harmony`, env `production`; Railway source repo shows as `niranjan-vsks/sales-copilot`, same repo as `origin`).
 - Backend start command comes from `backend/railway.json` (`$PORT`); do not change (B26).
