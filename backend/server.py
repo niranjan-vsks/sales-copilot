@@ -30,7 +30,11 @@ from microsoft_auth import get_auth_url, handle_callback, get_access_token, get_
 from n8n_client import trigger_workflow
 from ai_chat import process_message
 from d365_client import D365Client
-from excel_processor import parse_file, detect_account_columns, fuzzy_match as _fuzzy_match
+from excel_processor import parse_file, detect_account_columns
+import account_match
+import timeutil
+import httpx
+from urllib.parse import urlparse
 from knowledge_base import KnowledgeBaseService
 from auth_signup import create_signup_router
 
@@ -81,12 +85,14 @@ _D365_SUBJECT_PREFIX = {
     "appointment": "Meeting",
 }
 # statecode/statuscode for "Completed" per activity type.
-# These values are fixed by D365 — do not change them.
+# Source: Dataverse stock status pairs (appointment Completed = 1/3, phonecall Made = 1/2,
+# task Completed = 1/5); the fake flow enforces the same pairs. The tenant-verified values
+# in docs/revamp/private/D365_SCHEMA.md are still unfilled (P0.U5) — re-check there.
 # Emails are created as Draft (default) — no status override.
 _D365_COMPLETED_STATUS = {
-    "phonecall":   {"statecode": 1, "statuscode": 4},
+    "phonecall":   {"statecode": 1, "statuscode": 2},
     "task":        {"statecode": 1, "statuscode": 5},
-    "appointment": {"statecode": 3, "statuscode": 4},
+    "appointment": {"statecode": 1, "statuscode": 3},
 }
 
 
@@ -370,8 +376,8 @@ async def update_me(body: UpdateMeRequest, request: Request):
     return {"ok": True, "name": name}
 
 
-@limiter.limit("5/minute")
 @api_router.post("/auth/change-password")
+@limiter.limit("5/minute")
 async def change_password(body: ChangePasswordRequest, request: Request):
     user = await require_auth(request)
     auth_user = await db.authorized_users.find_one({"email": user.email})
@@ -398,8 +404,8 @@ async def change_password(body: ChangePasswordRequest, request: Request):
     return {"ok": True}
 
 
-@limiter.limit("10/minute")
 @api_router.post("/auth/login")
+@limiter.limit("10/minute")
 async def login(request: Request, body: LoginRequest):
     """Per-user email+password login. Password must have been set when team member was added."""
     email = body.email.lower().strip()
@@ -498,18 +504,71 @@ def _build_record_url(entity_set: str, record_id: str) -> Optional[str]:
     return f"{D365_ORG_URL}/main.aspx?etn={entity_name}&id={record_id}&pagetype=entityrecord"
 
 
-async def _execute_d365_activity(user: User, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Create a D365 activity using the first available connection path.
+def _activity_result(
+    status: str,
+    entity_set: str = "",
+    method: str = "",
+    record_id: str = "",
+    error_code: Optional[str] = None,
+    error_message: Optional[str] = None,
+    **extra: Any,
+) -> Dict[str, Any]:
+    """Uniform result of _execute_d365_activity (see docs/revamp/phases/P1 T1)."""
+    return {
+        "status": status,
+        "d365_record_id": record_id,
+        "record_url": _build_record_url(entity_set, record_id) if record_id else None,
+        "entity_set": entity_set,
+        "method": method,
+        "error_code": error_code,
+        "error_message": error_message,
+        **extra,
+    }
 
-    Priority:
-      1. OAuth token   — normal path for consented users
-      2. Power Automate webhook — bypasses tenant OAuth consent
-      3. Browser cookie session — Playwright headless token extraction
+
+_UNVERIFIED_MESSAGE = (
+    "Flow accepted the request but did not return a record ID. Check D365 before retrying."
+)
+
+
+def _classify_flow_error(exc: Exception) -> tuple:
+    """Map a legacy-webhook exception to (error_code, message). Never leaks the URL."""
+    if isinstance(exc, httpx.TimeoutException):
+        return "FLOW_UNREACHABLE", "The flow did not answer in time."
+    if isinstance(exc, httpx.HTTPError):
+        return "FLOW_UNREACHABLE", "Could not reach the flow (network error)."
+    m = re.match(r"Webhook returned (\d+): ?(.*)", str(exc), re.S)
+    if m:
+        http_status, detail = int(m.group(1)), m.group(2).strip()[:300]
+        if http_status in (401, 403):
+            return "FLOW_AUTH_REJECTED", f"Flow rejected the request (HTTP {http_status})."
+        if http_status in (400, 422):
+            return "CRM_VALIDATION", f"Flow reported a validation error (HTTP {http_status}): {detail}"
+        return "FLOW_UNREACHABLE", f"Flow returned HTTP {http_status}: {detail}"
+    return "FLOW_UNREACHABLE", f"Flow call failed: {str(exc)[:300]}"
+
+
+async def _execute_d365_activity(user: User, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a D365 activity and report the truth about it. Never raises for transport failures.
+
+    Returns a dict (see _activity_result) whose status is one of:
+      success    — a record ID came back
+      unverified — the flow accepted the request but returned no record ID
+      failed     — error_code/error_message say why (codes: ARCHITECTURE §6)
+      dry_run    — admin dry-run mode is on; nothing was sent
+
+    Transport order: (1) OAuth, only if bot_config.d365_direct_enabled is True;
+    (2) Power Automate webhook; (3) browser cookies, only if
+    bot_config.d365_browser_fallback_enabled is True.
     """
     activity_type = params.get("activity_type", "phonecall")
     entity_set = _D365_ENTITY_MAP.get(activity_type, "phonecalls")
     account = params.get("account", "")
-    duration = int(params.get("duration_minutes", 30))
+    try:
+        duration = int(params.get("duration_minutes", 30))
+    except (TypeError, ValueError):
+        return _activity_result("failed", entity_set, error_code="INPUT_INVALID",
+                                error_message="duration_minutes must be a whole number.")
     notes = params.get("notes", "")
 
     # Use explicit subject if provided; fall back to auto-generated
@@ -523,14 +582,23 @@ async def _execute_d365_activity(user: User, params: Dict[str, Any]) -> Dict[str
         "actualdurationminutes": duration,
         "description": notes,
     }
-    if params.get("start_time"):
-        # Ensure ISO 8601 with seconds and Z suffix (D365 Dataverse requires UTC format)
-        st = params["start_time"]
-        if len(st) == 16:   # "2026-04-09T12:00" → add :00Z
-            st = st + ":00Z"
-        elif not st.endswith("Z") and "+" not in st:
-            st = st + "Z"
-        payload["scheduledstart"] = st
+
+    # Times: the user types local time; D365 stores UTC (B07). Appointments always get an end (B08).
+    prefs = await db.user_preferences.find_one({"user_id": user.user_id}, {"_id": 0, "timezone": 1})
+    tz_name = timeutil.user_timezone(prefs)
+    start_utc = ""
+    try:
+        if params.get("start_time"):
+            start_utc = timeutil.to_utc_iso(params["start_time"], tz_name)
+        elif activity_type == "appointment":
+            start_utc = timeutil.now_utc_minute()
+    except ValueError as exc:
+        return _activity_result("failed", entity_set, error_code="INPUT_INVALID",
+                                error_message=f"Invalid start time: {exc}")
+    if start_utc:
+        payload["scheduledstart"] = start_utc
+        if activity_type == "appointment":
+            payload["scheduledend"] = timeutil.add_minutes(start_utc, duration)
     if params.get("location"):
         payload["location"] = params["location"]
     if params.get("teams_meeting"):
@@ -539,101 +607,108 @@ async def _execute_d365_activity(user: User, params: Dict[str, Any]) -> Dict[str
     if activity_type in _D365_COMPLETED_STATUS:
         payload.update(_D365_COMPLETED_STATUS[activity_type])
 
-    # ── Path 1: OAuth token (standard path) ──────────────────────────────
-    try:
-        access_token = await get_d365_token(user.user_id, db)
-        d365 = D365Client(access_token)
-        record = await d365.create_activity(entity_set, payload)
-        record_id = record.get("activityid") or record.get("id", "")
-        logger.info("D365 activity created via OAuth for %s", user.email)
-        return {
-            "status": "success",
-            "d365_record_id": record_id,
-            "record_url": _build_record_url(entity_set, record_id),
-            "entity_set": entity_set,
-            "method": "oauth",
-        }
-    except Exception as oauth_err:
-        logger.warning("OAuth D365 path failed for %s: %s — trying fallbacks", user.email, oauth_err)
+    config = await db.bot_config.find_one({"_id": "config"}) or {}
 
-    # ── Path 2: Power Automate webhook ────────────────────────────────────
-    config = await db.bot_config.find_one({"_id": "config"})
-    webhook_url = (config or {}).get("power_automate_webhook_url", "")
-    if webhook_url:
+    # ── Dry run: build the payload, send nothing (B25) ───────────────────
+    if config.get("dry_run_mode") is True:
+        logger.info(
+            "D365 DRY RUN for %s: type=%s entity=%s fields=%s scheduledstart=%s scheduledend=%s",
+            user.email, activity_type, entity_set, sorted(payload),
+            payload.get("scheduledstart"), payload.get("scheduledend"),
+        )
+        return _activity_result("dry_run", entity_set, method="dry_run")
+
+    last_error: Optional[tuple] = None
+
+    # ── Path 1: OAuth token (opt-in) ──────────────────────────────────────
+    if config.get("d365_direct_enabled") is True:
         try:
-            webhook_payload = {
-                **payload,
-                "activity_type": activity_type,
-                "account": account,
-                "activity_sub_type": params.get("activity_sub_type", ""),
-                "primary_attendee": params.get("primary_attendee", ""),
-                "other_attendees": params.get("other_attendees", ""),
-                "business_partner": params.get("business_partner", ""),
-                "customer_attendee": params.get("customer_attendee", ""),
-                "action_owners": params.get("action_owners", ""),
-                "partner_attendee": params.get("partner_attendee", ""),
-                "teams_meeting": bool(params.get("teams_meeting", False)),
-                "start_time": params.get("start_time", ""),
-                "mdm_id": params.get("mdm_id", ""),
-            }
-            record = await D365Client.create_activity_via_webhook(webhook_url, webhook_payload)
-            record_id = record.get("activityid", "")
-            # "success" only when D365 confirms the record with an ID.
-            # "pending" = webhook accepted but no record ID returned.
-            status = "success" if record_id else "pending"
-            logger.info("D365 activity via webhook for %s — status: %s", user.email, status)
-            if not record_id:
-                logger.warning(
-                    "Webhook accepted (HTTP %s) but returned no activityid for account '%s'. "
-                    "Fix: open the Power Automate flow and set the HTTP Response body to "
-                    '{"activityid": "@{outputs(\'Create_a_new_record\')?[\'body/activityid\']}"}. '
-                    "PA response: %s",
-                    record.get("_http_status"), account, record.get("_raw_response"),
-                )
-            return {
-                "status": status,
-                "d365_record_id": record_id,
-                "record_url": _build_record_url(entity_set, record_id),
-                "entity_set": entity_set,
-                "method": "webhook",
-                "webhook_http_status": record.get("_http_status"),
-                "webhook_raw_response": record.get("_raw_response"),
-                "pending_reason": (
-                    None if record_id
-                    else 'Webhook accepted. Update your Power Automate HTTP Response action to return {"activityid": "<guid>"} for D365 confirmation.'
-                ),
-            }
-        except Exception as webhook_err:
-            logger.warning("Webhook path failed: %s — trying browser session", webhook_err)
-
-    # ── Path 3: Browser cookie session ────────────────────────────────────
-    try:
-        from d365_browser import get_d365_token_from_cookies  # noqa: PLC0415
-        browser_token = await get_d365_token_from_cookies(db)
-        if browser_token:
-            d365 = D365Client(browser_token)
+            access_token = await get_d365_token(user.user_id, db)
+            d365 = D365Client(access_token)
             record = await d365.create_activity(entity_set, payload)
             record_id = record.get("activityid") or record.get("id", "")
-            logger.info("D365 activity created via browser cookie session for %s", user.email)
-            return {
-                "status": "success",
-                "d365_record_id": record_id,
-                "record_url": _build_record_url(entity_set, record_id),
-                "entity_set": entity_set,
-                "method": "browser",
-            }
-    except ImportError:
-        logger.warning("Playwright not installed — browser cookie path unavailable")
-    except Exception as browser_err:
-        logger.warning("Browser cookie path failed: %s", browser_err)
+            logger.info("D365 activity created via OAuth for %s", user.email)
+            if record_id:
+                return _activity_result("success", entity_set, "oauth", record_id)
+            return _activity_result("unverified", entity_set, "oauth",
+                                    error_code="FLOW_CONTRACT_VIOLATION", error_message=_UNVERIFIED_MESSAGE)
+        except Exception as oauth_err:
+            logger.warning("OAuth D365 path failed for %s: %s — trying fallbacks", user.email, oauth_err)
+            last_error = ("FLOW_UNREACHABLE", f"Direct D365 connection failed: {str(oauth_err)[:300]}")
 
-    # ── All paths failed ──────────────────────────────────────────────────
-    raise HTTPException(
-        status_code=503,
-        detail=(
-            "D365 connection unavailable. "
-            "Configure Power Automate webhook or browser cookies in Admin → Connections."
-        ),
+    # ── Path 2: Power Automate webhook ────────────────────────────────────
+    webhook_url = config.get("power_automate_webhook_url", "")
+    if webhook_url:
+        webhook_payload = {
+            **payload,
+            "activity_type": activity_type,
+            "account": account,
+            "activity_sub_type": params.get("activity_sub_type", ""),
+            "primary_attendee": params.get("primary_attendee", ""),
+            "other_attendees": params.get("other_attendees", ""),
+            "business_partner": params.get("business_partner", ""),
+            "customer_attendee": params.get("customer_attendee", ""),
+            "action_owners": params.get("action_owners", ""),
+            "partner_attendee": params.get("partner_attendee", ""),
+            "teams_meeting": bool(params.get("teams_meeting", False)),
+            "start_time": start_utc,
+            "mdm_id": params.get("mdm_id", ""),
+            "mdm_id_idg": params.get("mdm_id_idg", ""),
+            "mdm_id_isg": params.get("mdm_id_isg", ""),
+        }
+        try:
+            record = await D365Client.create_activity_via_webhook(webhook_url, webhook_payload)
+        except Exception as webhook_err:
+            code, message = _classify_flow_error(webhook_err)
+            logger.warning("Webhook path failed for %s: %s %s", user.email, code, message)
+            last_error = (code, message)
+        else:
+            record_id = record.get("activityid", "")
+            logger.info("D365 activity via webhook for %s — %s", user.email, "success" if record_id else "unverified")
+            extra = {
+                "webhook_http_status": record.get("_http_status"),
+                "webhook_raw_response": record.get("_raw_response"),
+            }
+            if record_id:
+                return _activity_result("success", entity_set, "webhook", record_id, **extra)
+            logger.warning(
+                "Webhook accepted (HTTP %s) but returned no activityid for account '%s'. "
+                "Fix: add an HTTP Response action returning the created record's activityid. PA response: %s",
+                record.get("_http_status"), account, record.get("_raw_response"),
+            )
+            return _activity_result(
+                "unverified", entity_set, "webhook",
+                error_code="FLOW_CONTRACT_VIOLATION", error_message=_UNVERIFIED_MESSAGE,
+                pending_reason=_UNVERIFIED_MESSAGE, **extra,
+            )
+
+    # ── Path 3: Browser cookie session (opt-in) ───────────────────────────
+    if config.get("d365_browser_fallback_enabled") is True:
+        try:
+            from d365_browser import get_d365_token_from_cookies  # noqa: PLC0415
+            browser_token = await get_d365_token_from_cookies(db)
+            if browser_token:
+                d365 = D365Client(browser_token)
+                record = await d365.create_activity(entity_set, payload)
+                record_id = record.get("activityid") or record.get("id", "")
+                logger.info("D365 activity created via browser cookie session for %s", user.email)
+                if record_id:
+                    return _activity_result("success", entity_set, "browser", record_id)
+                return _activity_result("unverified", entity_set, "browser",
+                                        error_code="FLOW_CONTRACT_VIOLATION", error_message=_UNVERIFIED_MESSAGE)
+        except ImportError:
+            logger.warning("Playwright not installed — browser cookie path unavailable")
+            last_error = ("FLOW_UNREACHABLE", "Browser session fallback is enabled but Playwright is not installed.")
+        except Exception as browser_err:
+            logger.warning("Browser cookie path failed: %s", browser_err)
+            last_error = ("FLOW_UNREACHABLE", f"Browser session fallback failed: {str(browser_err)[:300]}")
+
+    # ── Nothing produced a record ─────────────────────────────────────────
+    if last_error:
+        return _activity_result("failed", entity_set, error_code=last_error[0], error_message=last_error[1])
+    return _activity_result(
+        "failed", entity_set, error_code="FLOW_NOT_CONFIGURED",
+        error_message="No Power Automate flow URL is configured. Add it in Admin → Connections.",
     )
 
 
@@ -658,6 +733,36 @@ async def list_workflows(request: Request):
     return DEFAULT_WORKFLOWS
 
 
+async def _finalize_execution(
+    execution_id: str, result: Optional[Dict[str, Any]], error: Optional[Exception]
+) -> None:
+    """Close a workflow_executions doc. Called on every exit so nothing stays `pending` (B03)."""
+    update: Dict[str, Any] = {"completed_at": datetime.now(timezone.utc)}
+    if error is not None:
+        if isinstance(error, HTTPException):
+            code, message = f"HTTP_{error.status_code}", str(error.detail)
+        else:
+            code, message = "INTERNAL_ERROR", str(error)
+        update.update({
+            "status": "failed", "error_code": code, "error_message": message[:500],
+            "result": None, "d365_record_id": None,
+        })
+    else:
+        result = result or {}
+        update.update({
+            "status": result.get("status") or "success",
+            "result": result,
+            "d365_record_id": result.get("d365_record_id"),
+            "error_code": result.get("error_code"),
+            "error_message": result.get("error_message"),
+            "duration_ms": result.get("duration_ms"),
+        })
+    try:
+        await db.workflow_executions.update_one({"id": execution_id}, {"$set": update})
+    except Exception:
+        logger.error("Could not finalize execution %s", execution_id, exc_info=True)
+
+
 @api_router.post("/workflows/execute")
 async def execute_workflow(body: WorkflowExecuteRequest, request: Request):
     user = await require_auth(request)
@@ -668,7 +773,7 @@ async def execute_workflow(body: WorkflowExecuteRequest, request: Request):
         "user_id": user.user_id,
         "workflow_id": body.workflow_id,
         "params": body.params,
-        "status": "pending",
+        "status": "pending",   # transient: _finalize_execution always replaces it
         "created_at": datetime.now(timezone.utc)
     })
 
@@ -680,54 +785,55 @@ async def execute_workflow(body: WorkflowExecuteRequest, request: Request):
                 workflow_id=body.workflow_id,
                 payload={**body.params, "user_id": user.user_id, "execution_id": execution_id},
             )
-
-        await db.workflow_executions.update_one(
-            {"id": execution_id},
-            {"$set": {
-                "status": result.get("status", "success"),
-                "result": result,
-                "d365_record_id": result.get("d365_record_id"),
-                "duration_ms": result.get("duration_ms"),
-                "completed_at": datetime.now(timezone.utc),
-            }},
-        )
-        # Write to knowledge base (fire-and-forget)
-        if body.workflow_id == "log-d365-activity":
-            act_type = body.params.get("activity_type", "activity")
-            account = body.params.get("account", "")
-            subject = body.params.get("subject", "")
-            kb.fire(
-                user_id=user.user_id,
-                event_type="d365_activity_created",
-                event_summary=(
-                    f"{act_type.capitalize()} logged for {account}: \"{subject}\" "
-                    f"[{result.get('status', 'unknown')}] on {datetime.now(timezone.utc).strftime('%B %d')}"
-                ),
-                metadata={
-                    "activity_type": act_type,
-                    "account": account,
-                    "subject": subject,
-                    "status": result.get("status"),
-                    "record_id": result.get("d365_record_id", ""),
-                    "record_url": result.get("record_url", ""),
-                },
-            )
-
-        return {
-            "execution_id": execution_id,
-            "status": result.get("status", "success"),
-            "result": result,
-            "d365_record_url": result.get("record_url"),
-        }
-    except HTTPException:
+    except HTTPException as exc:
+        await _finalize_execution(execution_id, None, exc)
         raise
-    except Exception as e:
-        logger.error(f"Workflow execution error: {e}", exc_info=True)
-        await db.workflow_executions.update_one(
-            {"id": execution_id},
-            {"$set": {"status": "failed", "error_message": str(e)}},
+    except Exception as exc:
+        logger.error(f"Workflow execution error: {exc}", exc_info=True)
+        await _finalize_execution(execution_id, None, exc)
+        return JSONResponse(status_code=500, content={
+            "detail": "Workflow execution failed. Please try again.",
+            "error_code": "INTERNAL_ERROR", "execution_id": execution_id,
+        })
+
+    await _finalize_execution(execution_id, result, None)
+
+    status = result.get("status", "success")
+    # Write to knowledge base (fire-and-forget) — only for records that exist or may exist
+    if body.workflow_id == "log-d365-activity" and status in ("success", "unverified"):
+        act_type = body.params.get("activity_type", "activity")
+        account = body.params.get("account", "")
+        subject = body.params.get("subject", "")
+        kb.fire(
+            user_id=user.user_id,
+            event_type="d365_activity_created",
+            event_summary=(
+                f"{act_type.capitalize()} logged for {account}: \"{subject}\" "
+                f"[{status}] on {datetime.now(timezone.utc).strftime('%B %d')}"
+            ),
+            metadata={
+                "activity_type": act_type,
+                "account": account,
+                "subject": subject,
+                "status": status,
+                "record_id": result.get("d365_record_id", ""),
+                "record_url": result.get("record_url", ""),
+            },
         )
-        raise HTTPException(status_code=500, detail="Workflow execution failed. Please try again.")
+
+    if status == "failed":
+        return JSONResponse(status_code=502, content={
+            "detail": result.get("error_message") or "The activity could not be logged.",
+            "error_code": result.get("error_code") or "FLOW_UNREACHABLE",
+            "execution_id": execution_id,
+        })
+
+    return {
+        "execution_id": execution_id,
+        "status": status,
+        "result": result,
+        "d365_record_url": result.get("record_url"),
+    }
 
 
 @api_router.get("/workflows/executions")
@@ -764,8 +870,8 @@ async def get_executions(
 
 # ============== Chat Routes ==============
 
-@limiter.limit("30/minute")
 @api_router.post("/chat")
+@limiter.limit("30/minute")
 async def chat(request: Request, body: ChatRequest):
     user = await require_auth(request)
 
@@ -819,7 +925,7 @@ async def chat(request: Request, body: ChatRequest):
                 ]
                 await db.activity_sheet_jobs.insert_one({
                     "id": job_id, "user_id": user.user_id, "total": len(rows),
-                    "done": 0, "failed": 0, "status": "running",
+                    "done": 0, "failed": 0, "unverified": 0, "dry_run": 0, "status": "running",
                     "rows": initial_rows, "created_at": datetime.now(timezone.utc),
                 })
                 asyncio.create_task(_safe_task(_run_activity_sheet_job(job_id, user, rows), "activity_sheet_jobs", job_id))
@@ -831,59 +937,68 @@ async def chat(request: Request, body: ChatRequest):
             params = {**ai_response.get("payload", {}), "activity_type": "appointment",
                       "activity_sub_type": "Customer Meeting"}
 
-            # Look up MDM ID for the account so the PA webhook can link Regarding correctly
+            # Resolve the account against the user's default file so the webhook can link
+            # Regarding. Ambiguous names are refused rather than guessed (B09, B10).
             account_name = params.get("account", "")
+            ambiguous = None
             if account_name and not params.get("mdm_id"):
                 default_file = await db.uploaded_files.find_one(
                     {"user_id": user.user_id, "is_default": True}, {"file_id": 1}
                 )
                 if default_file:
-                    escaped = re.escape(account_name)
-                    acc_doc = await db.user_account_data.find_one(
-                        {
-                            "user_id": user.user_id,
-                            "file_id": default_file["file_id"],
-                            "account_name": {"$regex": f"^{escaped}$", "$options": "i"},
-                        },
-                        {"l2_mdm_id_idg": 1, "_id": 0},
-                    )
-                    if not acc_doc:
-                        acc_doc = await db.user_account_data.find_one(
-                            {
-                                "user_id": user.user_id,
-                                "file_id": default_file["file_id"],
-                                "account_name": {"$regex": escaped, "$options": "i"},
-                            },
-                            {"l2_mdm_id_idg": 1, "_id": 0},
+                    file_accounts = await db.user_account_data.find(
+                        {"user_id": user.user_id, "file_id": default_file["file_id"]},
+                        {"_id": 0, "account_name": 1, "l2_mdm_id_idg": 1, "l2_mdm_id_isg": 1},
+                    ).to_list(50000)
+                    match = account_match.resolve(account_name, file_accounts)
+                    if match["status"] in ("exact", "fuzzy"):
+                        params["account"] = match["account_name"]
+                        params["mdm_id"] = account_match.pick_mdm(
+                            {"l2_mdm_id_idg": match["mdm_id_idg"], "l2_mdm_id_isg": match["mdm_id_isg"]}
                         )
-                    if acc_doc and acc_doc.get("l2_mdm_id_idg"):
-                        params["mdm_id"] = acc_doc["l2_mdm_id_idg"]
+                        params["mdm_id_idg"] = match["mdm_id_idg"]
+                        params["mdm_id_isg"] = match["mdm_id_isg"]
+                    elif match["status"] == "ambiguous":
+                        ambiguous = match
 
-            try:
-                workflow_result = await _execute_d365_activity(user, params)
-                account = params.get("account", "")
-                subject = params.get("subject", "")
-                kb.fire(
-                    user_id=user.user_id,
-                    event_type="d365_activity_created",
-                    event_summary=(
-                        f"Appointment logged for {account}: \"{subject}\" "
-                        f"[{workflow_result.get('status', 'unknown')}] via AI chat on "
-                        f"{datetime.now(timezone.utc).strftime('%B %d')}"
-                    ),
-                    metadata={
-                        "activity_type": "appointment",
-                        "account": account,
-                        "subject": subject,
-                        "status": workflow_result.get("status"),
-                        "record_id": workflow_result.get("d365_record_id", ""),
-                        "record_url": workflow_result.get("record_url", ""),
-                        "source": "chat",
-                    },
-                )
-            except Exception as e:
-                logger.warning(f"Chat workflow trigger failed: {e}")
-                workflow_result = {"status": "failed", "error": str(e)}
+            if ambiguous:
+                names = ", ".join(c["account_name"] for c in ambiguous["candidates"])
+                workflow_result = {
+                    "status": "failed", "error_code": "ACCOUNT_AMBIGUOUS",
+                    "error_message": f"'{account_name}' matches more than one account ({names}). Use the exact account name.",
+                    "error": f"'{account_name}' matches more than one account ({names}). Use the exact account name.",
+                    "candidates": ambiguous["candidates"],
+                }
+            else:
+                try:
+                    workflow_result = await _execute_d365_activity(user, params)
+                    if workflow_result.get("status") == "failed":
+                        workflow_result["error"] = workflow_result.get("error_message")
+                    elif workflow_result.get("status") in ("success", "unverified"):
+                        account = params.get("account", "")
+                        subject = params.get("subject", "")
+                        kb.fire(
+                            user_id=user.user_id,
+                            event_type="d365_activity_created",
+                            event_summary=(
+                                f"Appointment logged for {account}: \"{subject}\" "
+                                f"[{workflow_result.get('status', 'unknown')}] via AI chat on "
+                                f"{datetime.now(timezone.utc).strftime('%B %d')}"
+                            ),
+                            metadata={
+                                "activity_type": "appointment",
+                                "account": account,
+                                "subject": subject,
+                                "status": workflow_result.get("status"),
+                                "record_id": workflow_result.get("d365_record_id", ""),
+                                "record_url": workflow_result.get("record_url", ""),
+                                "source": "chat",
+                            },
+                        )
+                except Exception as e:
+                    logger.warning(f"Chat workflow trigger failed: {e}")
+                    workflow_result = {"status": "failed", "error_code": "INTERNAL_ERROR",
+                                       "error_message": str(e), "error": str(e)}
 
     # Store assistant message
     await db.chat_history.insert_one({
@@ -1012,14 +1127,22 @@ async def get_d365_activities(
 
 # ── Power Automate webhook management (admin only) ────────────────────────────
 
+def _is_legacy_flow_host(host: str) -> bool:
+    """Power Automate's old `*.logic.azure.com` trigger URLs stopped working 2025-11-30 (B11)."""
+    return (host or "").lower().endswith("logic.azure.com")
+
+
 @api_router.get("/d365/webhook/status")
 async def d365_webhook_status(request: Request):
     await require_admin(request)
     config = await db.bot_config.find_one({"_id": "config"})
     url = (config or {}).get("power_automate_webhook_url", "")
+    host = (urlparse(url).hostname or "") if url else ""
     return {
         "configured": bool(url),
         "url_preview": (url[:45] + "…") if len(url) > 45 else url,
+        "host": host,
+        "legacy_host": _is_legacy_flow_host(host),
     }
 
 
@@ -1028,6 +1151,12 @@ async def save_webhook_url(body: WebhookUrlRequest, request: Request):
     admin = await require_admin(request)
     if body.url and not body.url.startswith("https://"):
         raise HTTPException(status_code=400, detail="Webhook URL must start with https://")
+    if body.url and _is_legacy_flow_host(urlparse(body.url).hostname or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="This is a retired Power Automate URL format (stopped working 30 Nov 2025). "
+                   "Open the flow and copy the new trigger URL.",
+        )
     await db.bot_config.update_one(
         {"_id": "config"},
         {"$set": {"power_automate_webhook_url": body.url, "updated_at": datetime.now(timezone.utc)}},
@@ -1288,7 +1417,11 @@ async def monitoring_summary(
     range_query = {"created_at": {"$gte": range_start}}
     total_range  = await db.workflow_executions.count_documents(range_query)
     failed_range = await db.workflow_executions.count_documents({**range_query, "status": "failed"})
-    pending_range = await db.workflow_executions.count_documents({**range_query, "status": "pending"})
+    # `pending_range` keeps its key for the UI; it now counts unverified runs (legacy `pending` docs
+    # were exactly that: accepted by the flow, never confirmed).
+    pending_range = await db.workflow_executions.count_documents(
+        {**range_query, "status": {"$in": ["unverified", "pending"]}}
+    )
 
     # ── Per-user breakdown ────────────────────────────────────────────────────
     pipeline_user = [
@@ -1554,13 +1687,20 @@ async def _resolve_rule_accounts(rule: Dict[str, Any], user_id: str) -> List[Dic
             ids = [a.strip() for a in account_filter.split(",") if a.strip()]
             base_q["$or"] = [
                 {"l2_mdm_id_idg": {"$in": ids}},
+                {"l2_mdm_id_isg": {"$in": ids}},
                 {"account_name": {"$in": ids}},
             ]
         docs = await db.user_account_data.find(
-            base_q, {"_id": 0, "account_name": 1, "l2_mdm_id_idg": 1}
+            base_q, {"_id": 0, "account_name": 1, "l2_mdm_id_idg": 1, "l2_mdm_id_isg": 1}
         ).to_list(2000)
         return [
-            {"account_id": d.get("l2_mdm_id_idg", ""), "name": d.get("account_name", ""), "mdm_id": d.get("l2_mdm_id_idg", "")}
+            {
+                "account_id": account_match.pick_mdm(d),
+                "name": d.get("account_name", ""),
+                "mdm_id": account_match.pick_mdm(d),
+                "mdm_id_idg": d.get("l2_mdm_id_idg", "") or "",
+                "mdm_id_isg": d.get("l2_mdm_id_isg", "") or "",
+            }
             for d in docs
         ]
 
@@ -1595,6 +1735,12 @@ async def preview_rule(rule_id: str, request: Request):
     return {"success": True, "data": {"rows": rows, "total": len(rows)}, "error": None}
 
 
+def _job_counter_inc(status: str) -> Dict[str, int]:
+    """`done` counts only confirmed records (B01); the other outcomes get their own counters."""
+    key = {"success": "done", "unverified": "unverified", "dry_run": "dry_run"}.get(status, "failed")
+    return {key: 1}
+
+
 async def _run_batch_job(job_id: str, user: "User", rule: Dict[str, Any], accounts: List[Dict[str, Any]]) -> None:
     """Background task: execute _execute_d365_activity for each account and update job progress."""
     template = rule.get("subject_template", "Activity")
@@ -1607,31 +1753,31 @@ async def _run_batch_job(job_id: str, user: "User", rule: Dict[str, Any], accoun
             "subject": template.replace("{name}", name),
             "account": name,
             "mdm_id": mdm_id,
+            "mdm_id_idg": account.get("mdm_id_idg", ""),
+            "mdm_id_isg": account.get("mdm_id_isg", ""),
             "duration_minutes": rule.get("duration_minutes", 30),
             "notes": rule.get("notes_template", "").replace("{name}", name),
         }
         try:
             result = await _execute_d365_activity(user, params)
-            row_update = {
-                "status": result.get("status", "success"),
-                "record_id": result.get("d365_record_id", ""),
-                "record_url": result.get("record_url", ""),
-                "method": result.get("method", ""),
-            }
         except Exception as e:
-            row_update = {"status": "failed", "error": str(e)}
+            logger.error("Batch row failed unexpectedly: %s", e, exc_info=True)
+            result = {"status": "failed", "error_code": "INTERNAL_ERROR", "error_message": str(e)}
 
-        status_field = "success" if row_update["status"] == "success" else (
-            "failed" if row_update["status"] == "failed" else "pending"
-        )
-        inc_done = 1 if status_field in ("success", "pending") else 0
-        inc_failed = 1 if status_field == "failed" else 0
-
+        row_update = {
+            "status": result.get("status", "failed"),
+            "record_id": result.get("d365_record_id", ""),
+            "record_url": result.get("record_url", ""),
+            "method": result.get("method", ""),
+            "error_code": result.get("error_code"),
+            "error_message": result.get("error_message"),
+            "error": result.get("error_message"),
+        }
         await db.batch_jobs.update_one(
             {"id": job_id},
             {
                 "$set": {f"rows.{idx}": {**{"account_id": account.get("account_id", ""), "name": name}, **row_update}},
-                "$inc": {"done": inc_done, "failed": inc_failed},
+                "$inc": _job_counter_inc(row_update["status"]),
             },
         )
 
@@ -1664,6 +1810,8 @@ async def execute_rule(rule_id: str, body: BatchExecuteRequest, request: Request
         "total": len(accounts),
         "done": 0,
         "failed": 0,
+        "unverified": 0,
+        "dry_run": 0,
         "status": "running",
         "rows": initial_rows,
         "created_at": datetime.now(timezone.utc),
@@ -1825,6 +1973,7 @@ async def get_file_accounts(file_id: str, request: Request, q: str = "", limit: 
         query["$or"] = [
             {"account_name": {"$regex": escaped_q, "$options": "i"}},
             {"l2_mdm_id_idg": {"$regex": escaped_q, "$options": "i"}},
+            {"l2_mdm_id_isg": {"$regex": escaped_q, "$options": "i"}},
         ]
     docs = await db.user_account_data.find(
         query,
@@ -1852,6 +2001,7 @@ async def search_accounts(request: Request, q: str = "", limit: int = Query(defa
             query["$or"] = [
                 {"account_name": {"$regex": escaped_q, "$options": "i"}},
                 {"l2_mdm_id_idg": {"$regex": escaped_q, "$options": "i"}},
+                {"l2_mdm_id_isg": {"$regex": escaped_q, "$options": "i"}},
             ]
         docs = await db.user_account_data.find(
             query,
@@ -1882,7 +2032,6 @@ from activity_sheet_processor import (  # noqa: E402
     parse_text as _sheet_parse_text,
     map_columns as _sheet_map_columns,
     normalize_rows as _sheet_normalize_rows,
-    combine_datetime as _sheet_combine_datetime,
     summarize_notes as _sheet_summarize_notes,
 )
 
@@ -1935,23 +2084,67 @@ async def parse_activity_sheet_file(request: Request, file: UploadFile = File(..
     return await _classify_rows(user.user_id, rows, col_mapping)
 
 
+async def _load_default_accounts(user_id: str) -> List[Dict[str, Any]]:
+    """Accounts of the user's default uploaded file (name + both MDM IDs), or []."""
+    default_file = await db.uploaded_files.find_one(
+        {"user_id": user_id, "is_default": True}, {"file_id": 1}
+    )
+    if not default_file:
+        return []
+    return await db.user_account_data.find(
+        {"user_id": user_id, "file_id": default_file["file_id"]},
+        {"account_name": 1, "l2_mdm_id_idg": 1, "l2_mdm_id_isg": 1, "_id": 0},
+    ).to_list(50000)
+
+
+def _match_summary(match: Dict[str, Any]) -> Dict[str, Any]:
+    """Compact account-match info shown to the user before executing a sheet."""
+    summary = {
+        "status": match["status"],
+        "account_name": match["account_name"],
+        "mdm_id": account_match.pick_mdm(
+            {"l2_mdm_id_idg": match["mdm_id_idg"], "l2_mdm_id_isg": match["mdm_id_isg"]}
+        ),
+        "score": match["score"],
+    }
+    if match["status"] == "ambiguous":
+        summary["candidates"] = [c["account_name"] for c in match["candidates"]]
+    return summary
+
+
 async def _classify_rows(user_id: str, rows: List[Dict[str, Any]], col_mapping: Dict[str, str]) -> Dict[str, Any]:
-    """Split rows into new vs already-logged based on serial_no history."""
+    """Split rows by serial_no history: new / duplicate (confirmed) / unverified (resend on request).
+
+    Only a log entry with d365_status == "success" makes a row a duplicate (B02). Entries that were
+    never confirmed (`unverified`, or legacy `pending`) are offered separately; anything else
+    (failed, unknown) is treated as new so it can be retried.
+    """
     serial_nos = [r["serial_no"] for r in rows if r.get("serial_no")]
     existing = await db.activity_sheet_log.find(
         {"user_id": user_id, "serial_no": {"$in": serial_nos}},
-        {"serial_no": 1, "_id": 0},
+        {"serial_no": 1, "d365_status": 1, "_id": 0},
     ).to_list(10000)
-    logged = {e["serial_no"] for e in existing}
-    new_rows = [r for r in rows if r.get("serial_no") not in logged]
-    dup_rows  = [r for r in rows if r.get("serial_no") in logged]
+    confirmed = {e["serial_no"] for e in existing if e.get("d365_status") == "success"}
+    unverified = {e["serial_no"] for e in existing if e.get("d365_status") in ("unverified", "pending")}
+
+    accounts = await _load_default_accounts(user_id)
+    new_rows, dup_rows, unverified_rows = [], [], []
+    for r in rows:
+        serial = r.get("serial_no")
+        if serial in confirmed:
+            dup_rows.append(r)
+            continue
+        r = {**r, "account_match": _match_summary(account_match.resolve(r.get("regarding", ""), accounts))}
+        (unverified_rows if serial in unverified else new_rows).append(r)
     return {
         "success": True,
         "data": {
             "new_rows": new_rows,
             "duplicate_rows": dup_rows,
+            "unverified_rows": unverified_rows,
             "total_new": len(new_rows),
             "total_duplicate": len(dup_rows),
+            "total_unverified": len(unverified_rows),
             "detected_columns": col_mapping,
         },
         "error": None,
@@ -1973,7 +2166,7 @@ async def execute_activity_sheet(body: ActivitySheetExecuteRequest, request: Req
     ]
     await db.activity_sheet_jobs.insert_one({
         "id": job_id, "user_id": user.user_id,
-        "total": len(body.rows), "done": 0, "failed": 0,
+        "total": len(body.rows), "done": 0, "failed": 0, "unverified": 0, "dry_run": 0,
         "status": "running", "rows": initial_rows,
         "created_at": datetime.now(timezone.utc),
     })
@@ -2008,24 +2201,19 @@ async def get_activity_sheet_history(request: Request):
 async def _run_activity_sheet_job(
     job_id: str, user: "User", rows: List[Dict[str, Any]]
 ) -> None:
-    """Background: summarize notes, look up MDM IDs, post each row to D365 as an Appointment."""
+    """Background: summarize notes, resolve accounts, post each row to D365 as an Appointment.
+
+    A row whose account cannot be resolved with confidence fails with ACCOUNT_NOT_FOUND /
+    ACCOUNT_AMBIGUOUS and never reaches D365 (B10). Only confirmed rows count as `done` (B01) and
+    only success/unverified rows enter activity_sheet_log (B02).
+    """
     from groq import AsyncGroq
     api_key = os.environ.get("GROQ_API_KEY", "")
     groq_client = AsyncGroq(api_key=api_key) if api_key else None
 
-    # Load account list once — fuzzy match per row against this cache
-    account_cache: List[Dict[str, str]] = []
-    default_file = await db.uploaded_files.find_one(
-        {"user_id": user.user_id, "is_default": True}, {"file_id": 1}
-    )
-    if default_file:
-        account_cache = await db.user_account_data.find(
-            {"user_id": user.user_id, "file_id": default_file["file_id"]},
-            {"account_name": 1, "l2_mdm_id_idg": 1, "_id": 0},
-        ).to_list(50000)
-
-    acc_name_list = [a["account_name"] for a in account_cache if a.get("account_name")]
-    acc_mdm_map   = {a["account_name"]: a.get("l2_mdm_id_idg", "") for a in account_cache}
+    account_cache = await _load_default_accounts(user.user_id)
+    prefs = await db.user_preferences.find_one({"user_id": user.user_id}, {"_id": 0, "timezone": 1})
+    tz_name = timeutil.user_timezone(prefs)
 
     for idx, row in enumerate(rows):
         serial_no       = row.get("serial_no", "")
@@ -2034,69 +2222,83 @@ async def _run_activity_sheet_job(
         time_str        = row.get("time", "")
         notes_raw       = row.get("notes", "")
         primary_att     = row.get("primary_attendee", "") or user.name
-
-        start_time = _sheet_combine_datetime(date_str, time_str)
-
-        notes_summary = notes_raw
-        if groq_client and notes_raw:
-            try:
-                notes_summary = await _sheet_summarize_notes(
-                    notes_raw, regarding, date_str, groq_client,
-                    os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
-                )
-            except Exception:
-                notes_summary = notes_raw
-
-        # Fuzzy MDM lookup — match user input against canonical account names
-        mdm_id = ""
+        row_update: Dict[str, Any]
         canonical_account = regarding
-        if regarding and acc_name_list:
-            matches = _fuzzy_match(regarding, acc_name_list, threshold=0.35, top_n=1)
-            if matches:
-                canonical_account = matches[0][1]
-                mdm_id = acc_mdm_map.get(canonical_account, "")
-
-        params: Dict[str, Any] = {
-            "activity_type":     "appointment",
-            "activity_sub_type": "Customer Meeting",
-            "subject":           f"Customer Meeting - {canonical_account}",
-            "account":           canonical_account,
-            "mdm_id":            mdm_id,
-            "duration_minutes":  60,
-            "notes":             notes_summary,
-            "start_time":        start_time,
-            "primary_attendee":  primary_att,
-        }
+        notes_summary = notes_raw
 
         try:
-            result = await _execute_d365_activity(user, params)
-            row_update: Dict[str, Any] = {
-                "status":         result.get("status", "success"),
-                "record_id":      result.get("d365_record_id", ""),
-                "record_url":     result.get("record_url", ""),
-                "notes_summary":  notes_summary,
-                "pending_reason": result.get("pending_reason"),
-            }
-            await db.activity_sheet_log.update_one(
-                {"user_id": user.user_id, "serial_no": serial_no},
-                {"$set": {
-                    "user_id":        user.user_id,
-                    "serial_no":      serial_no,
-                    "regarding":      canonical_account,
-                    "date":           date_str,
-                    "notes_original": notes_raw,
-                    "notes_summary":  notes_summary,
-                    "d365_record_id": row_update["record_id"],
-                    "d365_status":    row_update["status"],
-                    "logged_at":      datetime.now(timezone.utc),
-                }},
-                upsert=True,
-            )
-        except Exception as exc:
-            row_update = {"status": "failed", "error": str(exc)}
+            match = account_match.resolve(regarding, account_cache)
+            if match["status"] not in ("exact", "fuzzy"):
+                if not account_cache:
+                    code, message = "ACCOUNT_NOT_FOUND", "No account list uploaded. Upload your accounts in File Management first."
+                elif match["status"] == "ambiguous":
+                    names = ", ".join(c["account_name"] for c in match["candidates"])
+                    code, message = "ACCOUNT_AMBIGUOUS", f"'{regarding}' could be: {names}. Use the exact account name."
+                else:
+                    code, message = "ACCOUNT_NOT_FOUND", f"No account matching '{regarding}' in your account list."
+                row_update = {
+                    "status": "failed", "error_code": code, "error_message": message, "error": message,
+                    "candidates": [c["account_name"] for c in match["candidates"]],
+                }
+            else:
+                canonical_account = match["account_name"]
+                start_time = timeutil.combine_local(date_str, time_str, tz_name)
 
-        is_done   = row_update["status"] in ("success", "pending")
-        is_failed = row_update["status"] == "failed"
+                if groq_client and notes_raw:
+                    try:
+                        notes_summary = await _sheet_summarize_notes(
+                            notes_raw, regarding, date_str, groq_client,
+                            os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
+                        )
+                    except Exception:
+                        notes_summary = notes_raw
+
+                params: Dict[str, Any] = {
+                    "activity_type":     "appointment",
+                    "activity_sub_type": "Customer Meeting",
+                    "subject":           f"Customer Meeting - {canonical_account}",
+                    "account":           canonical_account,
+                    "mdm_id":            account_match.pick_mdm(
+                        {"l2_mdm_id_idg": match["mdm_id_idg"], "l2_mdm_id_isg": match["mdm_id_isg"]}
+                    ),
+                    "mdm_id_idg":        match["mdm_id_idg"],
+                    "mdm_id_isg":        match["mdm_id_isg"],
+                    "duration_minutes":  60,
+                    "notes":             notes_summary,
+                    "start_time":        start_time,
+                    "primary_attendee":  primary_att,
+                }
+                result = await _execute_d365_activity(user, params)
+                row_update = {
+                    "status":         result.get("status", "failed"),
+                    "record_id":      result.get("d365_record_id", ""),
+                    "record_url":     result.get("record_url", ""),
+                    "notes_summary":  notes_summary,
+                    "error_code":     result.get("error_code"),
+                    "error_message":  result.get("error_message"),
+                    "error":          result.get("error_message"),
+                }
+                if row_update["status"] in ("success", "unverified"):
+                    await db.activity_sheet_log.update_one(
+                        {"user_id": user.user_id, "serial_no": serial_no},
+                        {"$set": {
+                            "user_id":        user.user_id,
+                            "serial_no":      serial_no,
+                            "regarding":      canonical_account,
+                            "date":           date_str,
+                            "notes_original": notes_raw,
+                            "notes_summary":  notes_summary,
+                            "d365_record_id": row_update["record_id"],
+                            "d365_status":    row_update["status"],
+                            "logged_at":      datetime.now(timezone.utc),
+                        }},
+                        upsert=True,
+                    )
+        except Exception as exc:
+            logger.error("Activity sheet row %s failed unexpectedly: %s", serial_no, exc, exc_info=True)
+            row_update = {"status": "failed", "error_code": "INTERNAL_ERROR",
+                          "error_message": str(exc)[:300], "error": str(exc)[:300]}
+
         await db.activity_sheet_jobs.update_one(
             {"id": job_id},
             {
@@ -2104,7 +2306,7 @@ async def _run_activity_sheet_job(
                     "serial_no": serial_no, "regarding": regarding,
                     "date": date_str, **row_update,
                 }},
-                "$inc": {"done": 1 if is_done else 0, "failed": 1 if is_failed else 0},
+                "$inc": _job_counter_inc(row_update["status"]),
             },
         )
 
@@ -2126,7 +2328,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
     allow_origins=_cors_origins,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Internal-Key"],
 )
 

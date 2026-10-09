@@ -33,9 +33,16 @@ LOGIN_SCOPES = [
     "Calendars.ReadWrite",
 ]
 
-D365_SCOPES = [
-    "https://dynamics.microsoft.com/user_impersonation",
-]
+def d365_scopes() -> list:
+    """Dataverse scope for the configured org: `<org>/.default`, built at call time.
+
+    The previous `https://dynamics.microsoft.com/user_impersonation` is not a Dataverse
+    resource, so no token for it could ever be used against the org (B05).
+    """
+    org = os.environ.get("D365_ORG_URL", "").strip().rstrip("/")
+    if not org:
+        raise ValueError("D365_ORG_URL not set")
+    return [f"{org}/.default"]
 
 # Alias kept for any code that imports SCOPES directly
 SCOPES = LOGIN_SCOPES
@@ -206,6 +213,8 @@ async def get_d365_token(user_id: str, db) -> str:
     added and admin-consented in the Azure App Registration.
     Raises ValueError with a clear message if consent is missing.
     """
+    scopes = d365_scopes()  # fail fast, before any DB or MSAL work
+
     user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "email": 1})
     if not user_doc:
         raise ValueError(f"User {user_id} not found")
@@ -229,7 +238,7 @@ async def get_d365_token(user_id: str, db) -> str:
 
     result = _msal_app().acquire_token_by_refresh_token(
         refresh_token=refresh_token,
-        scopes=D365_SCOPES,
+        scopes=scopes,
     )
 
     if "error" in result:

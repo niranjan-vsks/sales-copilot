@@ -24,7 +24,7 @@ Update rules: [DOCTRINE.md §6](DOCTRINE.md). Edit only your phase's rows plus t
 Status values: `NOT STARTED` · `IN PROGRESS` · `GATE` (building done, running G1–G7) · `DONE` · `BLOCKED: <reason>`.
 
 ## Task ticks
-(Each agent adds its phase's task list here when starting, e.g. `- [ ] P1.T1 Status vocabulary`.)
+(Each agent adds its phase's task list here when starting, e.g. `- [x] P1.T1 Status vocabulary`.)
 
 ### P0
 - [x] P0.R0 Railway failed build/deploy root cause recorded (see "Railway deploy failures")
@@ -42,14 +42,14 @@ Status values: `NOT STARTED` · `IN PROGRESS` · `GATE` (building done, running 
 - [ ] P0.U6 Canary (optional)
 
 ### P1
-- [ ] P1.T1 Status vocabulary + `_finalize_execution`
-- [ ] P1.T2 Transport order + opt-in flags, `D365_SCOPES`
-- [ ] P1.T3 Dry run is real
-- [ ] P1.T4 Correct payload data (`timeutil.py`, completed status, `scheduledend`)
-- [ ] P1.T5 Account resolution (`account_match.py`)
-- [ ] P1.T6 Bulk jobs count truthfully, retries never blocked
-- [ ] P1.T7 Legacy URL detection
-- [ ] P1.T8 CORS PATCH + rate-limit decorator order
+- [x] P1.T1 Status vocabulary + `_finalize_execution`
+- [x] P1.T2 Transport order + opt-in flags, `D365_SCOPES`
+- [x] P1.T3 Dry run is real
+- [x] P1.T4 Correct payload data (`timeutil.py`, completed status, `scheduledend`)
+- [x] P1.T5 Account resolution (`account_match.py`)
+- [x] P1.T6 Bulk jobs count truthfully, retries never blocked
+- [x] P1.T7 Legacy URL detection
+- [x] P1.T8 CORS PATCH + rate-limit decorator order
 - [ ] P1.T9 Frontend truth
 - [ ] P1.G Gates G1–G7
 
