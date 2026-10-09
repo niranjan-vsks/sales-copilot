@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   Settings, CheckCircle, XCircle, Loader2, PlugZap,
-  Globe, Save, Trash2, HelpCircle, X, ChevronRight,
+  Globe, Save, Trash2, HelpCircle, X, ChevronRight, AlertTriangle,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -314,6 +314,15 @@ export default function ConnectionsPage() {
             <div className="bg-[#0f0f10] border border-[#1f2022] px-4 py-3 mb-4">
               <p className="text-[#9CA3AF] text-xs mb-0.5">Active endpoint</p>
               <p className="text-[#F2F3F5] text-sm font-mono break-all">{webhookStatus.url_preview}</p>
+            </div>
+          )}
+          {webhookStatus?.legacy_host && (
+            <div className="flex items-start gap-2 bg-[#ef4444]/10 border border-[#ef4444]/20 px-4 py-3 mb-4" role="alert">
+              <AlertTriangle className="w-4 h-4 text-[#ef4444] shrink-0 mt-0.5" />
+              <p className="text-[#ef4444] text-xs leading-relaxed">
+                This is a retired Power Automate URL format ({webhookStatus.host}). It stopped working on 30 Nov 2025,
+                so activities sent to it will fail. Open the flow and paste the new trigger URL below.
+              </p>
             </div>
           )}
           <div className="flex gap-2">

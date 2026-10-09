@@ -17,11 +17,13 @@ const SUGGESTED_PROMPTS = [
 // ── Workflow execution card (shown when AI triggers a workflow from chat) ──────
 function WorkflowCard({ workflowType, result }) {
   const statusMap = {
-    success: { cls: 'text-[#22c55e]', label: 'Logged successfully' },
-    pending: { cls: 'text-[#f59e0b]', label: 'Submitted — awaiting D365 confirmation' },
-    failed:  { cls: 'text-[#ef4444]', label: 'Failed' },
+    success:    { cls: 'text-[#22c55e]', label: 'Confirmed in D365' },
+    unverified: { cls: 'text-[#f59e0b]', label: 'Sent, but D365 did not confirm a record ID — check D365 before retrying' },
+    pending:    { cls: 'text-[#f59e0b]', label: 'Sent, but D365 did not confirm a record ID — check D365 before retrying' },
+    dry_run:    { cls: 'text-[#9CA3AF]', label: 'Dry run — nothing was sent to D365' },
+    failed:     { cls: 'text-[#ef4444]', label: 'Failed' },
   };
-  const s = statusMap[result?.status] || statusMap.pending;
+  const s = statusMap[result?.status] || { cls: 'text-[#9CA3AF]', label: `Unknown status: ${result?.status ?? 'none'}` };
 
   return (
     <div className="mt-2 bg-[#0f0f10] border border-[#1f2022] px-4 py-3">
@@ -42,8 +44,11 @@ function WorkflowCard({ workflowType, result }) {
           View in D365 <ExternalLink className="w-3 h-3" />
         </a>
       )}
-      {result?.status === 'failed' && result?.error && (
-        <p className="text-xs text-[#ef4444] mt-1">{result.error}</p>
+      {result?.status === 'failed' && (result?.error_message || result?.error) && (
+        <p className="text-xs text-[#ef4444] mt-1">
+          {result.error_code && <span className="font-mono mr-1.5">{result.error_code}</span>}
+          {result.error_message || result.error}
+        </p>
       )}
     </div>
   );

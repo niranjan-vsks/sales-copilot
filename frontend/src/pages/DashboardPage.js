@@ -71,17 +71,43 @@ const cardVariants = {
 };
 
 // ── Status badge ──────────────────────────────────────────────────────────────
+const GREY_BADGE = 'text-[#9CA3AF] bg-[#9CA3AF]/10 border-[#9CA3AF]/20';
+const AMBER_BADGE = 'text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/20';
+const GREEN_BADGE = 'text-[#22c55e] bg-[#22c55e]/10 border-[#22c55e]/20';
+
 function ExecStatusBadge({ status }) {
   const map = {
-    success: 'text-[#22c55e] bg-[#22c55e]/10 border-[#22c55e]/20',
-    failed:  'text-[#ef4444] bg-[#ef4444]/10 border-[#ef4444]/20',
-    pending: 'text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/20',
+    success:    GREEN_BADGE,
+    confirmed:  GREEN_BADGE,
+    unverified: AMBER_BADGE,
+    pending:    AMBER_BADGE, // historical rows written before statuses were truthful
+    failed:     'text-[#ef4444] bg-[#ef4444]/10 border-[#ef4444]/20',
+    dry_run:    GREY_BADGE,
   };
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 text-xs border rounded-none font-medium ${map[status] || map.pending}`}>
-      {status}
+    <span className={`inline-flex items-center px-2 py-0.5 text-xs border rounded-none font-medium ${map[status] || GREY_BADGE}`}>
+      {status === 'pending' ? 'unverified' : String(status || 'unknown').replace(/_/g, ' ')}
     </span>
   );
+}
+
+// api.post() drops everything but `detail` from an error body; this call needs `error_code`.
+async function postExecute(params) {
+  const res = await fetch(`${process.env.REACT_APP_BACKEND_URL || ''}/api/workflows/execute`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workflow_id: 'log-d365-activity', params }),
+  });
+  const text = await res.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch (_) { /* non-JSON error page */ }
+  if (!res.ok) {
+    const err = new Error(typeof data.detail === 'string' ? data.detail : `Request failed: ${res.status}`);
+    err.errorCode = data.error_code;
+    throw err;
+  }
+  return data;
 }
 
 // ── Shared input class ────────────────────────────────────────────────────────
@@ -225,27 +251,48 @@ export default function DashboardPage() {
   const onSubmit = async (values) => {
     setSubmitting(true);
     try {
-      const result = await api.post('/workflows/execute', {
-        workflow_id: 'log-d365-activity',
-        params: { ...values, mdm_id: mdmIds.idg || mdmIds.isg || '' },
-      });
+      const params = {
+        ...values,
+        mdm_id: mdmIds.idg || mdmIds.isg || '',
+        mdm_id_idg: mdmIds.idg || '',
+        mdm_id_isg: mdmIds.isg || '',
+      };
+      // datetime-local has no offset: send the browser's local time as UTC so the server never guesses.
+      if (values.start_time) {
+        const start = new Date(values.start_time);
+        if (Number.isNaN(start.getTime())) {
+          toast.error('Invalid start time', { description: 'Pick the start time again.' });
+          return;
+        }
+        params.start_time = start.toISOString();
+      }
+      const result = await postExecute(params);
 
-      if (result.status === 'success' && result.d365_record_url) {
+      if (result.status === 'success') {
         toast.success('Activity confirmed in D365', {
           description: 'Record created and verified.',
-          action: { label: 'View in D365', onClick: () => window.open(result.d365_record_url, '_blank') },
+          ...(result.d365_record_url && {
+            action: { label: 'View in D365', onClick: () => window.open(result.d365_record_url, '_blank') },
+          }),
         });
-      } else if (result.status === 'pending') {
-        toast.info('Activity submitted', {
-          description: 'Awaiting confirmation from your connected workflow.',
+      } else if (result.status === 'unverified') {
+        toast.warning('Sent, but D365 did not confirm a record ID', {
+          description: 'Check D365 before retrying.',
+        });
+      } else if (result.status === 'dry_run') {
+        toast.info('Dry run — nothing was sent', {
+          description: 'Dry run mode is on (Admin → Connections). Nothing was sent to D365.',
         });
       } else {
-        toast.success('Activity logged', { description: 'Activity recorded.' });
+        toast.warning('Activity status unknown', { description: `Server returned "${result.status}".` });
       }
       setDialogOpen(false);
       loadExecutions();
     } catch (err) {
-      toast.error('Failed to log activity', { description: err.message });
+      toast.error(err.errorCode ? `Failed to log activity (${err.errorCode})` : 'Failed to log activity', {
+        description: err.message,
+      });
+      loadExecutions();
     } finally {
       setSubmitting(false);
     }
@@ -683,13 +730,20 @@ export default function DashboardPage() {
                 </div>
               )}
 
-              {/* Pending notice + raw PA response */}
-              {selectedExec.status === 'pending' && (
+              {/* Dry run notice */}
+              {selectedExec.status === 'dry_run' && (
+                <div className="bg-[#9CA3AF]/10 border border-[#9CA3AF]/20 px-3 py-2.5">
+                  <p className="text-[#9CA3AF] text-xs leading-relaxed">Dry run — nothing was sent to D365.</p>
+                </div>
+              )}
+
+              {/* Unverified notice + raw PA response */}
+              {(selectedExec.status === 'unverified' || selectedExec.status === 'pending') && (
                 <div className="space-y-2">
                   <div className="bg-[#f59e0b]/10 border border-[#f59e0b]/20 px-3 py-2.5">
                     <p className="text-[#f59e0b] text-xs leading-relaxed">
-                      {selectedExec.result?.pending_reason ||
-                        'Webhook accepted. No record ID returned — update Power Automate HTTP Response to include the activityid.'}
+                      {selectedExec.error_message || selectedExec.result?.pending_reason ||
+                        'Flow accepted the request but did not return a record ID. Check D365 before retrying.'}
                     </p>
                   </div>
                   {selectedExec.result?.webhook_raw_response !== undefined && (
@@ -717,6 +771,9 @@ export default function DashboardPage() {
                 <div className="space-y-2">
                   {selectedExec.error_message && (
                     <div className="bg-[#ef4444]/10 border border-[#ef4444]/20 px-3 py-2.5">
+                      {selectedExec.error_code && (
+                        <p className="text-[#ef4444] text-[10px] font-mono mb-1">{selectedExec.error_code}</p>
+                      )}
                       <p className="text-[#ef4444] text-xs">{selectedExec.error_message}</p>
                     </div>
                   )}

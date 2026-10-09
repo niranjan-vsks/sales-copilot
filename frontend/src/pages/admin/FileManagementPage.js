@@ -21,6 +21,67 @@ const CARD_VARIANTS = {
 
 const DURATION_OPTIONS = [15, 30, 45, 60, 90, 120];
 
+const EMPTY_JOB = { open: false, jobId: null, total: 0, done: 0, failed: 0, unverified: 0, dry_run: 0, status: 'running', rows: [] };
+
+// Row outcome as the backend reports it: only `success` means D365 returned a record ID.
+const ROW_OUTCOME = {
+  success:    { label: 'Logged',     cls: 'text-[#22c55e]' },
+  unverified: { label: 'Unverified', cls: 'text-[#f59e0b]' },
+  dry_run:    { label: 'Dry run',    cls: 'text-[#9CA3AF]' },
+  failed:     { label: 'Failed',     cls: 'text-[#ef4444]' },
+};
+
+function jobSummary(d) {
+  const parts = [`${d.done} confirmed`];
+  if (d.unverified) parts.push(`${d.unverified} unverified`);
+  if (d.dry_run) parts.push(`${d.dry_run} dry run`);
+  if (d.failed) parts.push(`${d.failed} failed`);
+  return parts.join(', ');
+}
+
+function JobCounts({ job }) {
+  return (
+    <div className="flex justify-between text-xs text-[#9CA3AF] mb-1.5">
+      <span>{job.done} of {job.total} confirmed</span>
+      <span className="flex gap-3">
+        {job.unverified > 0 && <span className="text-[#f59e0b]">{job.unverified} unverified</span>}
+        {job.dry_run > 0 && <span className="text-[#9CA3AF]">{job.dry_run} dry run</span>}
+        {job.failed > 0 && <span className="text-[#ef4444]">{job.failed} failed</span>}
+      </span>
+    </div>
+  );
+}
+
+function JobRowOutcome({ row }) {
+  const o = ROW_OUTCOME[row.status] || { label: row.status, cls: 'text-[#9CA3AF]' };
+  return (
+    <span className={`shrink-0 text-right ${o.cls}`} title={row.error_message || undefined}>
+      {o.label}
+      {row.error_code && <span className="ml-1.5 font-mono text-[10px] opacity-80">{row.error_code}</span>}
+    </span>
+  );
+}
+
+function AccountMatchCell({ match }) {
+  if (!match) return <span className="text-[#9CA3AF]/50">—</span>;
+  if (match.status === 'exact' || match.status === 'fuzzy') {
+    return (
+      <span className="text-[#22c55e]" title={match.mdm_id ? `MDM ${match.mdm_id}` : undefined}>
+        {match.account_name}
+        <span className="ml-1.5 text-[10px] opacity-80">{match.status === 'exact' ? 'exact' : `${Math.round(match.score * 100)}%`}</span>
+      </span>
+    );
+  }
+  if (match.status === 'ambiguous') {
+    return (
+      <span className="text-[#f59e0b]" title={(match.candidates || []).join(', ')}>
+        Ambiguous ({(match.candidates || []).length})
+      </span>
+    );
+  }
+  return <span className="text-[#ef4444]">No match</span>;
+}
+
 const EMPTY_RULE_FORM = {
   name: '',
   subject_template: 'Activity with {name}',
@@ -54,7 +115,7 @@ export default function FileManagementPage() {
   const [preview, setPreview] = useState({ open: false, rule: null, rows: [], loading: false });
 
   // Rules job progress modal
-  const [job, setJob] = useState({ open: false, jobId: null, total: 0, done: 0, failed: 0, status: 'running', rows: [] });
+  const [job, setJob] = useState(EMPTY_JOB);
   const jobPollRef = useRef(null);
 
   // ── Activity Sheet state ─────────────────────────────────────────────────────
@@ -62,12 +123,13 @@ export default function FileManagementPage() {
   const [sheetText, setSheetText]           = useState('');
   const [sheetFile, setSheetFile]           = useState(null);
   const [sheetParsing, setSheetParsing]     = useState(false);
-  const [sheetParseResult, setSheetParseResult] = useState(null); // { new_rows, duplicate_rows, total_new, total_duplicate }
+  const [sheetParseResult, setSheetParseResult] = useState(null); // { new_rows, duplicate_rows, unverified_rows, total_new, total_duplicate, total_unverified }
   const [sheetDragOver, setSheetDragOver]   = useState(false);
   const sheetFileInputRef = useRef(null);
 
   // Sheet job progress modal
-  const [sheetJob, setSheetJob] = useState({ open: false, jobId: null, total: 0, done: 0, failed: 0, status: 'running', rows: [] });
+  const [sheetJob, setSheetJob] = useState(EMPTY_JOB);
+  const [sheetResend, setSheetResend] = useState(false); // also send rows the flow accepted but never confirmed
   const sheetJobPollRef = useRef(null);
 
   // ── Load files ───────────────────────────────────────────────────────────────
@@ -225,7 +287,7 @@ export default function FileManagementPage() {
     try {
       const res = await api.post(`/excel/rules/${rule.id}/execute`, { account_ids: null });
       const { job_id, total } = res.data;
-      setJob({ open: true, jobId: job_id, total, done: 0, failed: 0, status: 'running', rows: [] });
+      setJob({ ...EMPTY_JOB, open: true, jobId: job_id, total });
       clearInterval(jobPollRef.current);
       jobPollRef.current = setInterval(() => pollJob(job_id), 2000);
     } catch (err) {
@@ -237,11 +299,12 @@ export default function FileManagementPage() {
     try {
       const res = await api.get(`/excel/jobs/${jobId}`);
       const d = res?.data;
-      setJob((prev) => ({ ...prev, total: d.total, done: d.done, failed: d.failed, status: d.status, rows: Array.isArray(d.rows) ? d.rows : [] }));
+      setJob((prev) => ({ ...prev, total: d.total, done: d.done, failed: d.failed, unverified: d.unverified || 0, dry_run: d.dry_run || 0, status: d.status, rows: Array.isArray(d.rows) ? d.rows : [] }));
       if (d.status === 'complete') {
         clearInterval(jobPollRef.current);
         jobPollRef.current = null;
-        toast.success(`Bulk run complete — ${d.done} logged, ${d.failed} failed`);
+        const notify = d.failed || d.unverified ? toast.warning : toast.success;
+        notify(`Bulk run complete — ${jobSummary(d)}`);
       }
     } catch { /* silent retry */ }
   };
@@ -249,7 +312,7 @@ export default function FileManagementPage() {
   const closeJob = () => {
     clearInterval(jobPollRef.current);
     jobPollRef.current = null;
-    setJob({ open: false, jobId: null, total: 0, done: 0, failed: 0, status: 'running', rows: [] });
+    setJob(EMPTY_JOB);
   };
 
   // ── Activity Sheet handlers ───────────────────────────────────────────────────
@@ -269,6 +332,7 @@ export default function FileManagementPage() {
   const handleSheetParse = async () => {
     setSheetParsing(true);
     setSheetParseResult(null);
+    setSheetResend(false);
     try {
       let res;
       if (sheetTab === 'paste') {
@@ -293,11 +357,15 @@ export default function FileManagementPage() {
   };
 
   const handleSheetExecute = async () => {
-    if (!sheetParseResult?.new_rows?.length) return;
+    const rows = [
+      ...(sheetParseResult?.new_rows || []),
+      ...(sheetResend ? sheetParseResult?.unverified_rows || [] : []),
+    ];
+    if (!rows.length) return;
     try {
-      const res = await api.post('/activity-sheets/execute', { rows: sheetParseResult.new_rows });
+      const res = await api.post('/activity-sheets/execute', { rows });
       const { job_id, total } = res.data;
-      setSheetJob({ open: true, jobId: job_id, total, done: 0, failed: 0, status: 'running', rows: [] });
+      setSheetJob({ ...EMPTY_JOB, open: true, jobId: job_id, total });
       clearInterval(sheetJobPollRef.current);
       sheetJobPollRef.current = setInterval(() => pollSheetJob(job_id), 2000);
     } catch (err) {
@@ -309,11 +377,12 @@ export default function FileManagementPage() {
     try {
       const res = await api.get(`/activity-sheets/jobs/${jobId}`);
       const d = res?.data?.data || res?.data;
-      setSheetJob((prev) => ({ ...prev, total: d.total, done: d.done, failed: d.failed, status: d.status, rows: Array.isArray(d.rows) ? d.rows : [] }));
+      setSheetJob((prev) => ({ ...prev, total: d.total, done: d.done, failed: d.failed, unverified: d.unverified || 0, dry_run: d.dry_run || 0, status: d.status, rows: Array.isArray(d.rows) ? d.rows : [] }));
       if (d.status === 'complete') {
         clearInterval(sheetJobPollRef.current);
         sheetJobPollRef.current = null;
-        toast.success(`Sheet log complete — ${d.done} logged, ${d.failed} failed`);
+        const notify = d.failed || d.unverified ? toast.warning : toast.success;
+        notify(`Sheet log complete — ${jobSummary(d)}`);
       }
     } catch { /* silent retry */ }
   };
@@ -321,7 +390,7 @@ export default function FileManagementPage() {
   const closeSheetJob = () => {
     clearInterval(sheetJobPollRef.current);
     sheetJobPollRef.current = null;
-    setSheetJob({ open: false, jobId: null, total: 0, done: 0, failed: 0, status: 'running', rows: [] });
+    setSheetJob(EMPTY_JOB);
   };
 
   // Cleanup both poll refs on unmount
@@ -760,11 +829,34 @@ export default function FileManagementPage() {
                   <span className="text-[#F2F3F5] font-medium">{sheetParseResult.total_new ?? sheetParseResult.new_rows?.length ?? 0}</span> new records
                   {' · '}
                   <span className="text-[#9CA3AF]">{sheetParseResult.total_duplicate ?? sheetParseResult.duplicate_rows?.length ?? 0} already logged</span>
+                  {(sheetParseResult.total_unverified ?? 0) > 0 && (
+                    <>
+                      {' · '}
+                      <span className="text-[#f59e0b]">{sheetParseResult.total_unverified} unverified</span>
+                    </>
+                  )}
                 </span>
               </div>
 
+              {/* Rows the flow accepted earlier but never confirmed */}
+              {(sheetParseResult.total_unverified ?? 0) > 0 && (
+                <label className="flex items-start gap-2 p-3 bg-[#f59e0b]/5 border border-[#f59e0b]/20 text-xs text-[#f59e0b] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={sheetResend}
+                    onChange={(e) => setSheetResend(e.target.checked)}
+                    className="mt-0.5 accent-[#FF4500]"
+                  />
+                  <span>
+                    Resend {sheetParseResult.total_unverified} unverified {sheetParseResult.total_unverified === 1 ? 'row' : 'rows'}.
+                    D365 never confirmed these — check D365 first, resending can create a duplicate.
+                  </span>
+                </label>
+              )}
+
               {/* All-duplicate info box */}
-              {(sheetParseResult.total_new ?? sheetParseResult.new_rows?.length ?? 0) === 0 && (
+              {(sheetParseResult.total_new ?? sheetParseResult.new_rows?.length ?? 0) === 0 &&
+                (sheetParseResult.total_unverified ?? 0) === 0 && (
                 <div className="flex items-start gap-2 p-3 bg-blue-500/5 border border-blue-500/20 text-xs text-blue-400">
                   <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                   <span>All serial numbers have already been logged.</span>
@@ -775,6 +867,7 @@ export default function FileManagementPage() {
               {(() => {
                 const allRows = [
                   ...(sheetParseResult.new_rows || []).map((r) => ({ ...r, _status: 'new' })),
+                  ...(sheetParseResult.unverified_rows || []).map((r) => ({ ...r, _status: 'unverified' })),
                   ...(sheetParseResult.duplicate_rows || []).map((r) => ({ ...r, _status: 'duplicate' })),
                 ].sort((a, b) => (Number(a.serial_no) || 0) - (Number(b.serial_no) || 0));
                 if (allRows.length === 0) return null;
@@ -788,6 +881,7 @@ export default function FileManagementPage() {
                             <th className="px-3 py-2 text-left text-[#9CA3AF] font-medium w-24">Date</th>
                             <th className="px-3 py-2 text-left text-[#9CA3AF] font-medium w-20">Time</th>
                             <th className="px-3 py-2 text-left text-[#9CA3AF] font-medium">Regarding</th>
+                            <th className="px-3 py-2 text-left text-[#9CA3AF] font-medium">Account match</th>
                             <th className="px-3 py-2 text-left text-[#9CA3AF] font-medium hidden md:table-cell">Notes</th>
                             <th className="px-3 py-2 text-left text-[#9CA3AF] font-medium w-28">Status</th>
                           </tr>
@@ -799,12 +893,15 @@ export default function FileManagementPage() {
                               <td className="px-3 py-1.5 text-[#F2F3F5]">{row.date ?? '—'}</td>
                               <td className="px-3 py-1.5 text-[#9CA3AF]">{row.time ?? '—'}</td>
                               <td className="px-3 py-1.5 text-[#F2F3F5]">{row.regarding ?? '—'}</td>
+                              <td className="px-3 py-1.5"><AccountMatchCell match={row.account_match} /></td>
                               <td className="px-3 py-1.5 text-[#9CA3AF] hidden md:table-cell">
                                 {row.notes ? (row.notes.length > 60 ? `${row.notes.slice(0, 60)}…` : row.notes) : '—'}
                               </td>
                               <td className="px-3 py-1.5">
                                 {row._status === 'new' ? (
                                   <span className="bg-green-500/10 text-green-400 border border-green-500/20 rounded-none text-[10px] px-1.5 py-0.5 inline-block">New</span>
+                                ) : row._status === 'unverified' ? (
+                                  <span className="bg-[#f59e0b]/10 text-[#f59e0b] border border-[#f59e0b]/20 rounded-none text-[10px] px-1.5 py-0.5 inline-block">Unverified</span>
                                 ) : (
                                   <span className="bg-[#1f2022] text-[#9CA3AF] border border-[#1f2022] rounded-none text-[10px] px-1.5 py-0.5 inline-block">Already Logged</span>
                                 )}
@@ -819,14 +916,20 @@ export default function FileManagementPage() {
               })()}
 
               {/* Execute button */}
-              <button
-                onClick={handleSheetExecute}
-                disabled={(sheetParseResult.total_new ?? sheetParseResult.new_rows?.length ?? 0) === 0}
-                className="flex items-center gap-2 h-9 px-5 bg-[#FF4500] hover:bg-[#FF4500]/80 text-white text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <Play className="w-3.5 h-3.5" />
-                Log {sheetParseResult.total_new ?? sheetParseResult.new_rows?.length ?? 0} Records to D365
-              </button>
+              {(() => {
+                const sendCount = (sheetParseResult.total_new ?? sheetParseResult.new_rows?.length ?? 0)
+                  + (sheetResend ? sheetParseResult.total_unverified ?? 0 : 0);
+                return (
+                  <button
+                    onClick={handleSheetExecute}
+                    disabled={sendCount === 0}
+                    className="flex items-center gap-2 h-9 px-5 bg-[#FF4500] hover:bg-[#FF4500]/80 text-white text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <Play className="w-3.5 h-3.5" />
+                    Log {sendCount} Records to D365
+                  </button>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -970,13 +1073,10 @@ export default function FileManagementPage() {
 
               <div className="px-5 py-4 space-y-4">
                 <div>
-                  <div className="flex justify-between text-xs text-[#9CA3AF] mb-1.5">
-                    <span>{job.done} of {job.total} logged</span>
-                    {job.failed > 0 && <span className="text-[#ef4444]">{job.failed} failed</span>}
-                  </div>
+                  <JobCounts job={job} />
                   <div className="h-1.5 bg-[#1f2022] overflow-hidden">
                     <motion.div className="h-full bg-[#FF4500]"
-                      animate={{ width: `${job.total ? (job.done / job.total) * 100 : 0}%` }}
+                      animate={{ width: `${job.total ? ((job.done + job.failed + job.unverified + job.dry_run) / job.total) * 100 : 0}%` }}
                       transition={{ duration: 0.4 }}
                     />
                   </div>
@@ -987,12 +1087,7 @@ export default function FileManagementPage() {
                     {job.rows.filter((r) => r.status !== 'pending').slice(-20).map((row, i) => (
                       <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-[#1f2022]/30 last:border-0">
                         <span className="text-[#9CA3AF] truncate flex-1">{row.name || row.account_id || '—'}</span>
-                        <span className={`ml-2 shrink-0 ${
-                          row.status === 'success' ? 'text-[#22c55e]' :
-                          row.status === 'failed'  ? 'text-[#ef4444]' : 'text-[#9CA3AF]'
-                        }`}>
-                          {row.status === 'success' ? 'Logged' : row.status === 'failed' ? 'Failed' : 'Pending'}
-                        </span>
+                        <span className="ml-2"><JobRowOutcome row={row} /></span>
                       </div>
                     ))}
                   </div>
@@ -1080,13 +1175,10 @@ export default function FileManagementPage() {
 
               <div className="px-5 py-4 space-y-4">
                 <div>
-                  <div className="flex justify-between text-xs text-[#9CA3AF] mb-1.5">
-                    <span>{sheetJob.done} of {sheetJob.total} done</span>
-                    {sheetJob.failed > 0 && <span className="text-[#ef4444]">{sheetJob.failed} failed</span>}
-                  </div>
+                  <JobCounts job={sheetJob} />
                   <div className="h-1.5 bg-[#1f2022] overflow-hidden">
                     <motion.div className="h-full bg-[#FF4500]"
-                      animate={{ width: `${sheetJob.total ? (sheetJob.done / sheetJob.total) * 100 : 0}%` }}
+                      animate={{ width: `${sheetJob.total ? ((sheetJob.done + sheetJob.failed + sheetJob.unverified + sheetJob.dry_run) / sheetJob.total) * 100 : 0}%` }}
                       transition={{ duration: 0.4 }}
                     />
                   </div>
@@ -1098,12 +1190,7 @@ export default function FileManagementPage() {
                       <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-[#1f2022]/30 last:border-0">
                         <span className="text-[#9CA3AF] font-mono shrink-0 w-12">{row.serial_no ?? '—'}</span>
                         <span className="text-[#9CA3AF] truncate flex-1 mx-2">{row.regarding || '—'}</span>
-                        <span className={`shrink-0 ${
-                          row.status === 'success' ? 'text-[#22c55e]' :
-                          row.status === 'failed'  ? 'text-[#ef4444]' : 'text-[#9CA3AF]'
-                        }`}>
-                          {row.status === 'success' ? 'Logged' : row.status === 'failed' ? 'Failed' : 'Pending'}
-                        </span>
+                        <JobRowOutcome row={row} />
                       </div>
                     ))}
                   </div>

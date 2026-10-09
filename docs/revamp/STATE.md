@@ -50,7 +50,7 @@ Status values: `NOT STARTED` · `IN PROGRESS` · `GATE` (building done, running 
 - [x] P1.T6 Bulk jobs count truthfully, retries never blocked
 - [x] P1.T7 Legacy URL detection
 - [x] P1.T8 CORS PATCH + rate-limit decorator order
-- [ ] P1.T9 Frontend truth
+- [x] P1.T9 Frontend truth
 - [ ] P1.G Gates G1–G7
 
 ---

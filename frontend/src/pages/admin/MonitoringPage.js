@@ -50,13 +50,17 @@ function StatCard({ label, value, icon: Icon, accent }) {
 
 function StatusBadge({ status }) {
   const styles = {
-    success: 'text-[#22c55e] bg-[#22c55e]/10 border-[#22c55e]/20',
-    failed:  'text-[#ef4444] bg-[#ef4444]/10 border-[#ef4444]/20',
-    pending: 'text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/20',
+    success:    'text-[#22c55e] bg-[#22c55e]/10 border-[#22c55e]/20',
+    failed:     'text-[#ef4444] bg-[#ef4444]/10 border-[#ef4444]/20',
+    unverified: 'text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/20',
+    pending:    'text-[#f59e0b] bg-[#f59e0b]/10 border-[#f59e0b]/20',
+    dry_run:    'text-[#9CA3AF] bg-[#9CA3AF]/10 border-[#9CA3AF]/20',
   };
+  // Old executions were stored as `pending` when the flow never confirmed a record: same meaning.
+  const label = status === 'pending' ? 'unverified' : String(status || 'unknown').replace(/_/g, ' ');
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 text-xs border rounded-none font-medium ${styles[status] || styles.pending}`}>
-      {status}
+    <span className={`inline-flex items-center px-2 py-0.5 text-xs border rounded-none font-medium ${styles[status] || styles.dry_run}`}>
+      {label}
     </span>
   );
 }
