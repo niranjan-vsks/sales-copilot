@@ -13,7 +13,7 @@ Update rules: [DOCTRINE.md §6](DOCTRINE.md). Edit only your phase's rows plus t
 | Phase | Name | Status | Agent / branch | Depends on | Parallel with |
 |---|---|---|---|---|---|
 | P0 | Groundwork | IN PROGRESS | Claude Opus 5.5 / `revamp/p0-groundwork` (worktree `../loop-p0`) | — | — |
-| P1 | Truthful Logging | NOT STARTED | — | P0 | P3 |
+| P1 | Truthful Logging | IN PROGRESS | Claude Sonnet 5.5 / `revamp/p1-truthful-logging` (worktree `../loop-p1`) | P0 | P3 |
 | P2 | Universal Connector | NOT STARTED | — | P0, P1 | P3 |
 | P3 | Model Layer | NOT STARTED | — | P0 | P1, P2 |
 | P4 | MCP Bridge | NOT STARTED | — | P2, P3 | — |
@@ -40,6 +40,18 @@ Status values: `NOT STARTED` · `IN PROGRESS` · `GATE` (building done, running 
 - [ ] P0.U4 Generic flow built (FLOW_BUILD_GUIDE.md)
 - [ ] P0.U5 Schema facts → `private/D365_SCHEMA.md`, `private/field_map.json`
 - [ ] P0.U6 Canary (optional)
+
+### P1
+- [ ] P1.T1 Status vocabulary + `_finalize_execution`
+- [ ] P1.T2 Transport order + opt-in flags, `D365_SCOPES`
+- [ ] P1.T3 Dry run is real
+- [ ] P1.T4 Correct payload data (`timeutil.py`, completed status, `scheduledend`)
+- [ ] P1.T5 Account resolution (`account_match.py`)
+- [ ] P1.T6 Bulk jobs count truthfully, retries never blocked
+- [ ] P1.T7 Legacy URL detection
+- [ ] P1.T8 CORS PATCH + rate-limit decorator order
+- [ ] P1.T9 Frontend truth
+- [ ] P1.G Gates G1–G7
 
 ---
 
@@ -81,5 +93,6 @@ Source: Railway CLI `deployment list` (MCP not loaded in session; CLI is logged 
 - 2026-10-09 — Pre-approved dependencies: `tzdata`, `google-genai`, `mcp`; dev: `pytest`, `pytest-asyncio`, `respx`, `mongomock-motor`. Pre-approved collections: `crm_field_maps`, `crm_connections`, `crm_outbox`.
 
 ## Log (newest first, one line each)
+- 2026-10-10 — P1 started (Sonnet 5.5). User declared P0 done and said go ahead; P0 U1–U6/T6 are still unticked in STATE, so the P0 'DONE' dependency was waived by the user. P1 uses only P0 T1–T5 outputs (harness, fake flow); D365_SCHEMA.md status codes are unverified so spec defaults are used.
 - 2026-10-09 — P0 started (Opus 5.5). Railway failed-deploy root cause recorded: api = deleted requirements.txt; ui = stale package-lock.json. Both fixed in May; prod green.
 - 2026-10-09 — Specs, doctrine, audit, architecture, flow guide written (docs/revamp). Waiting for `BULLSEYE P0`.
