@@ -2137,6 +2137,12 @@ app.include_router(api_router)
 async def healthz():
     return {"status": "ok"}
 
+
+@app.get("/api/version", tags=["ops"])
+async def version():
+    return {"commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA", "local"),
+            "service": "sales-copilot-api", "env": APP_ENV}
+
 # ── Static frontend (dev mode only) ──────────────────────────────────────────
 # In dev: `yarn build` once, then uvicorn serves everything on http://localhost:8000
 # In prod: frontend is a separate Render static site — this block is skipped
