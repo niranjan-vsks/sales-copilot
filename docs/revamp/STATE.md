@@ -95,6 +95,7 @@ Source: Railway CLI `deployment list` (MCP not loaded in session; CLI is logged 
 - 2026-10-09 — Pre-approved dependencies: `tzdata`, `google-genai`, `mcp`; dev: `pytest`, `pytest-asyncio`, `respx`, `mongomock-motor`. Pre-approved collections: `crm_field_maps`, `crm_connections`, `crm_outbox`.
 
 ## Log (newest first, one line each)
+- 2026-10-10 — P1 shipped to `main` (`9d5827b`) and live: version/healthz/www/login-page/CORS-PATCH preflight verified on prod. Authenticated prod smoke (login, dashboard, Profile name PATCH) still needed → P1 stays GATE. P2 not started (needs P1 DONE + real `field_map.json` + generic flow).
 - 2026-10-10 — P1 started (Sonnet 5.5). User declared P0 done and said go ahead; P0 U1–U6/T6 are still unticked in STATE, so the P0 'DONE' dependency was waived by the user. P1 uses only P0 T1–T5 outputs (harness, fake flow); D365_SCHEMA.md status codes are unverified so spec defaults are used.
 - 2026-10-09 — P0 started (Opus 5.5). Railway failed-deploy root cause recorded: api = deleted requirements.txt; ui = stale package-lock.json. Both fixed in May; prod green.
 - 2026-10-09 — Specs, doctrine, audit, architecture, flow guide written (docs/revamp). Waiting for `BULLSEYE P0`.
