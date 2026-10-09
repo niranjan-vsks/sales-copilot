@@ -59,6 +59,9 @@ venv/
 # E2E test suite — intentionally excluded from repo
 test_scripts/
 
+# Revamp: tenant evidence, schema, field map, probe secrets — never commit
+docs/revamp/private/
+
 # Development tools
 chainlit.md
 .chainlit
