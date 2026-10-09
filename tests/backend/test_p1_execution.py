@@ -94,7 +94,8 @@ async def test_unexpected_exception_finalizes_execution(auth_client, db, monkeyp
     r = await auth_client.post("/api/workflows/execute", json=EXEC)
     assert r.status_code == 500 and r.json()["error_code"] == "INTERNAL_ERROR"
     assert "kaboom" not in r.text
-    assert (await _only_execution(db))["status"] == "failed"
+    doc = await _only_execution(db)
+    assert doc["status"] == "failed" and "kaboom" not in doc["error_message"]   # doc is shown in the UI
 
 
 @pytest.mark.asyncio

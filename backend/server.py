@@ -526,6 +526,7 @@ def _activity_result(
     }
 
 
+_INTERNAL_ROW_MESSAGE = "Unexpected error while processing this record. The details are in the server log."
 _UNVERIFIED_MESSAGE = (
     "Flow accepted the request but did not return a record ID. Check D365 before retrying."
 )
@@ -742,7 +743,8 @@ async def _finalize_execution(
         if isinstance(error, HTTPException):
             code, message = f"HTTP_{error.status_code}", str(error.detail)
         else:
-            code, message = "INTERNAL_ERROR", str(error)
+            # Details go to the log only; the doc is shown to users in the UI.
+            code, message = "INTERNAL_ERROR", "Unexpected error. The details are in the server log."
         update.update({
             "status": "failed", "error_code": code, "error_message": message[:500],
             "result": None, "d365_record_id": None,
@@ -998,7 +1000,7 @@ async def chat(request: Request, body: ChatRequest):
                 except Exception as e:
                     logger.warning(f"Chat workflow trigger failed: {e}")
                     workflow_result = {"status": "failed", "error_code": "INTERNAL_ERROR",
-                                       "error_message": str(e), "error": str(e)}
+                                       "error_message": _INTERNAL_ROW_MESSAGE, "error": _INTERNAL_ROW_MESSAGE}
 
     # Store assistant message
     await db.chat_history.insert_one({
@@ -1762,7 +1764,7 @@ async def _run_batch_job(job_id: str, user: "User", rule: Dict[str, Any], accoun
             result = await _execute_d365_activity(user, params)
         except Exception as e:
             logger.error("Batch row failed unexpectedly: %s", e, exc_info=True)
-            result = {"status": "failed", "error_code": "INTERNAL_ERROR", "error_message": str(e)}
+            result = {"status": "failed", "error_code": "INTERNAL_ERROR", "error_message": _INTERNAL_ROW_MESSAGE}
 
         row_update = {
             "status": result.get("status", "failed"),
@@ -2297,7 +2299,7 @@ async def _run_activity_sheet_job(
         except Exception as exc:
             logger.error("Activity sheet row %s failed unexpectedly: %s", serial_no, exc, exc_info=True)
             row_update = {"status": "failed", "error_code": "INTERNAL_ERROR",
-                          "error_message": str(exc)[:300], "error": str(exc)[:300]}
+                          "error_message": _INTERNAL_ROW_MESSAGE, "error": _INTERNAL_ROW_MESSAGE}
 
         await db.activity_sheet_jobs.update_one(
             {"id": job_id},
