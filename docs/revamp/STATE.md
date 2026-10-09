@@ -29,7 +29,7 @@ Status values: `NOT STARTED` · `IN PROGRESS` · `GATE` (building done, running 
 ### P0
 - [x] P0.R0 Railway failed build/deploy root cause recorded (see "Railway deploy failures")
 - [x] P0.T1 `/api/version`
-- [ ] P0.T2 Test harness (`tests/conftest.py`, smoke tests)
+- [x] P0.T2 Test harness (`tests/conftest.py`, smoke tests)
 - [ ] P0.T3 Fake flow (`tests/fakes/fake_flow.py`) + tests
 - [ ] P0.T4 D365 probe script (`scripts/d365_probe.py`)
 - [ ] P0.T5 Dev DB facts + `docs/revamp/private/` folder
