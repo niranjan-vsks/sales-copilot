@@ -15,7 +15,7 @@ Update rules: [DOCTRINE.md §6](DOCTRINE.md). Edit only your phase's rows plus t
 | P0 | Groundwork | IN PROGRESS | Claude Opus 5.5 / `revamp/p0-groundwork` (worktree `../loop-p0`) | — | — |
 | P1 | Truthful Logging | GATE | Claude Sonnet 5.5 / `revamp/p1-truthful-logging` (worktree `../loop-p1`) | P0 | P3 |
 | P2 | Universal Connector | NOT STARTED | — | P0, P1 | P3 |
-| P3 | Model Layer | NOT STARTED | — | P0 | P1, P2 |
+| P3 | Model Layer | IN PROGRESS | Claude Sonnet 5.5 / `revamp/p3-model-layer` (worktree `../loop-p3`) | P0 | P1, P2 |
 | P4 | MCP Bridge | NOT STARTED | — | P2, P3 | — |
 | P5 | Restructure | NOT STARTED | — | P1–P4 | — |
 | P6 | Hardening | NOT STARTED | — | P5 | — |
@@ -52,6 +52,16 @@ Status values: `NOT STARTED` · `IN PROGRESS` · `GATE` (building done, running 
 - [x] P1.T8 CORS PATCH + rate-limit decorator order
 - [x] P1.T9 Frontend truth
 - [ ] P1.G Gates G1–G7 (G1–G6 green; G7 see log)
+
+### P3
+- [ ] P3.T1 `llm/base.py`
+- [ ] P3.T2 Providers (groq, gemini)
+- [ ] P3.T3 `llm/router.py`
+- [ ] P3.T4 `llm/schemas.py` (ChatDecision)
+- [ ] P3.T5 `ai_chat.py` on the router
+- [ ] P3.T6 Prompt update
+- [ ] P3.T7 `summarize_notes` on the router
+- [ ] P3.T8 Tests
 
 ---
 
@@ -95,6 +105,7 @@ Source: Railway CLI `deployment list` (MCP not loaded in session; CLI is logged 
 - 2026-10-09 — Pre-approved dependencies: `tzdata`, `google-genai`, `mcp`; dev: `pytest`, `pytest-asyncio`, `respx`, `mongomock-motor`. Pre-approved collections: `crm_field_maps`, `crm_connections`, `crm_outbox`.
 
 ## Log (newest first, one line each)
+- 2026-10-11 — P3 started (Sonnet 5.5, unattended). User waived the remaining P0 user tasks for P3 (uses only the P0 harness). Worktree `../loop-p3` from `origin/main` `8848f1d`. P4 not to be started.
 - 2026-10-10 — P1 shipped to `main` (`9d5827b`) and live: version/healthz/www/login-page/CORS-PATCH preflight verified on prod. Authenticated prod smoke (login, dashboard, Profile name PATCH) still needed → P1 stays GATE. P2 not started (needs P1 DONE + real `field_map.json` + generic flow).
 - 2026-10-10 — P1 started (Sonnet 5.5). User declared P0 done and said go ahead; P0 U1–U6/T6 are still unticked in STATE, so the P0 'DONE' dependency was waived by the user. P1 uses only P0 T1–T5 outputs (harness, fake flow); D365_SCHEMA.md status codes are unverified so spec defaults are used.
 - 2026-10-09 — P0 started (Opus 5.5). Railway failed-deploy root cause recorded: api = deleted requirements.txt; ui = stale package-lock.json. Both fixed in May; prod green.
