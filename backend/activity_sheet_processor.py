@@ -16,6 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from llm import router as llm_router
+
 COLUMN_ALIASES: Dict[str, List[str]] = {
     "serial_no":        ["serial no", "sno", "s no", "serial number", "sr no", "sr", "id", "no", "#", "serial"],
     "date":             ["date", "meeting date", "activity date", "visit date"],
@@ -173,10 +175,14 @@ async def summarize_notes(
     notes: str,
     account: str,
     date: str,
-    groq_client: Any,
-    model: str = "llama-3.1-8b-instant",
+    groq_client: Any = None,
+    model: str = "",
 ) -> str:
-    """Use Groq to convert informal notes into a professional CRM summary."""
+    """Use the LLM layer to convert informal notes into a professional CRM summary.
+
+    `groq_client` and `model` are accepted for backward compatibility and ignored; provider and
+    model come from the LLM env (see llm.router).
+    """
     if not notes or not notes.strip():
         return ""
 
@@ -190,12 +196,10 @@ async def summarize_notes(
     )
 
     try:
-        response = await groq_client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": user_prompt}],
-            temperature=0.2,
-            max_tokens=300,
+        result = await llm_router.complete_text(
+            [{"role": "user", "content": user_prompt}],
+            temperature=0.2, max_tokens=300,
         )
-        return response.choices[0].message.content.strip()
+        return result.text.strip()
     except Exception:
         return notes  # Graceful fallback: keep original notes

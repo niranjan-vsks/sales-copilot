@@ -60,8 +60,8 @@ Status values: `NOT STARTED` · `IN PROGRESS` · `GATE` (building done, running 
 - [x] P3.T4 `llm/schemas.py` (ChatDecision)
 - [x] P3.T5 `ai_chat.py` on the router
 - [x] P3.T6 Prompt update
-- [ ] P3.T7 `summarize_notes` on the router
-- [ ] P3.T8 Tests
+- [x] P3.T7 `summarize_notes` on the router
+- [x] P3.T8 Tests
 
 ---
 
