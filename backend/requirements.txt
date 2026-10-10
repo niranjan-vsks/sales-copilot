@@ -19,6 +19,7 @@ bcrypt>=4.1.0
 
 # AI
 groq>=0.9.0
+google-genai>=1.0
 
 # Utilities
 python-dotenv>=1.0.1
