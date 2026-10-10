@@ -58,8 +58,8 @@ Status values: `NOT STARTED` · `IN PROGRESS` · `GATE` (building done, running 
 - [x] P3.T2 Providers (groq, gemini)
 - [x] P3.T3 `llm/router.py`
 - [x] P3.T4 `llm/schemas.py` (ChatDecision)
-- [ ] P3.T5 `ai_chat.py` on the router
-- [ ] P3.T6 Prompt update
+- [x] P3.T5 `ai_chat.py` on the router
+- [x] P3.T6 Prompt update
 - [ ] P3.T7 `summarize_notes` on the router
 - [ ] P3.T8 Tests
 

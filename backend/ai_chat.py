@@ -1,42 +1,31 @@
 """
-Context-aware Groq + Llama chat layer.
+Context-aware chat layer.
 
 Every request receives a live snapshot of the application state (webhook
 status, uploaded files, recent activities, …) which is injected into the
 system prompt so the AI can answer questions about the app AND trigger
 workflows with real data.
 
-Required env var:  GROQ_API_KEY
-Optional env var:  GROQ_MODEL  (default: llama-3.1-8b-instant)
+The model call goes through `llm.router` (Groq by default, Gemini when
+GEMINI_API_KEY is set, automatic fallback) and the reply is validated against
+`llm.schemas.ChatDecision` before anything acts on it. Provider env vars are
+documented in docs/revamp/STATE.md "Environment facts".
 
-Prompts are loaded from the prompts/ directory at startup so they can be
-edited without touching Python code.
+Prompts are loaded from the prompts/ directory so they can be edited without
+touching Python code.
 """
-import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from groq import AsyncGroq
+from llm import router
+from llm.base import LLMUnavailable
+from llm.schemas import ACTIVITY_TYPES, ChatDecision
 
 logger = logging.getLogger(__name__)
 
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
-
-_groq_client: Optional[AsyncGroq] = None
-
-
-def _get_groq_client() -> AsyncGroq:
-    global _groq_client
-    if _groq_client is None:
-        api_key = os.environ.get("GROQ_API_KEY", "")
-        if not api_key:
-            raise RuntimeError("GROQ_API_KEY is not configured")
-        _groq_client = AsyncGroq(api_key=api_key)
-    return _groq_client
 
 
 def _load_prompt(filename: str) -> str:
@@ -109,10 +98,12 @@ def build_system_prompt(context: Dict[str, Any], today: str) -> str:
     """Construct the system prompt from the template file with live state injected."""
     template = _load_prompt("ai_chat_system.txt")
     live_state = _build_live_state(context)
+    enabled = context.get("enabled_activity_types") or ["appointment"]
     return (
         template
         .replace("__TODAY__", today)
         .replace("__LIVE_STATE__", live_state)
+        .replace("__ENABLED_TYPES__", ", ".join(enabled))
     )
 
 
@@ -124,7 +115,7 @@ async def process_message(
     chat_history: List[Dict[str, Any]],
     context_snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Send the user message to Groq with live app context.
+    """Send the user message to the LLM layer with live app context.
 
     Returns:
         {
@@ -133,9 +124,10 @@ async def process_message(
           payload:              dict
           clarification_needed: bool
           user_message:         str
+          workflow / params:    legacy keys kept for existing callers
         }
+    Never raises: provider failures come back as a clarification message.
     """
-    client = _get_groq_client()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     system_content = build_system_prompt(context_snapshot or {}, today)
 
@@ -150,49 +142,35 @@ async def process_message(
 
     messages.append({"role": "user", "content": text})
 
-    raw = ""
     try:
-        response = await client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=messages,
-            temperature=0.15,
-            max_tokens=1024,
+        decision, _ = await router.complete_json(
+            messages, ChatDecision, temperature=0.15, max_tokens=1024,
         )
-        raw = response.choices[0].message.content.strip()
-
-        # Strip markdown fences if Groq wraps the JSON
-        if raw.startswith("```"):
-            parts = raw.split("```")
-            raw = parts[1] if len(parts) > 1 else raw
-            if raw.lower().startswith("json"):
-                raw = raw[4:].strip()
-
-        result = json.loads(raw)
-
-        action = result.get("action", "answer")
-        workflow_type = result.get("workflow_type")
-        if workflow_type in (None, "null", ""):
-            workflow_type = None
-
-        return {
-            "action": action,
-            "workflow_type": workflow_type,
-            "payload": result.get("payload", {}),
-            "clarification_needed": bool(result.get("clarification_needed", False)),
-            "user_message": result.get("user_message", "I can help with that."),
-            # Legacy compat
-            "workflow": "log-d365-activity" if action == "trigger_workflow" and workflow_type == "appointment" else (
-                "activity-sheet" if action == "trigger_workflow" and workflow_type == "activity_sheet" else None
-            ),
-            "params": result.get("payload", {}),
-        }
-
-    except json.JSONDecodeError:
-        logger.warning("Groq returned non-JSON: %.300s", raw)
-        return _fallback("I didn't quite understand that. Could you rephrase your request?")
-    except Exception as exc:
-        logger.error("Groq API error: %s", exc)
+    except LLMUnavailable as exc:
+        logger.error("LLM unavailable for chat: %s", exc)
         return _fallback("I'm having trouble processing that right now. Please try again in a moment.")
+    except Exception as exc:
+        logger.error("Unexpected chat LLM error: %s", type(exc).__name__)
+        return _fallback("I'm having trouble processing that right now. Please try again in a moment.")
+
+    action = decision.action
+    workflow_type = decision.workflow_type
+    payload = dict(decision.payload)
+    if action == "trigger_workflow" and workflow_type in ACTIVITY_TYPES:
+        payload["activity_type"] = workflow_type
+
+    return {
+        "action": action,
+        "workflow_type": workflow_type,
+        "payload": payload,
+        "clarification_needed": decision.clarification_needed,
+        "user_message": decision.user_message,
+        # Legacy compat
+        "workflow": "log-d365-activity" if action == "trigger_workflow" and workflow_type in ACTIVITY_TYPES else (
+            "activity-sheet" if action == "trigger_workflow" and workflow_type == "activity_sheet" else None
+        ),
+        "params": payload,
+    }
 
 
 def _fallback(msg: str) -> Dict[str, Any]:
