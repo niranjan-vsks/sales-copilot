@@ -82,3 +82,47 @@ async def test_no_default_file_falls_back_to_latest_upload(db):
                                            "l2_mdm_id_idg": "PA9", "l2_mdm_id_isg": ""})
     accounts = await server._load_default_accounts("u1")
     assert account_match.resolve("neuland", accounts)["mdm_id_idg"] == "PA9"
+
+
+SHEET_ACCTS = [{"account_name": "NEULAND LABORATORIES LIMITED", "l2_mdm_id_idg": "PA1", "l2_mdm_id_isg": ""},
+               {"account_name": "AUROBINDO PHARMA LIMITED", "l2_mdm_id_idg": "PA2", "l2_mdm_id_isg": ""}]
+
+
+async def _seed(db, user_id="user_x"):
+    from datetime import datetime, timezone
+    await db.uploaded_files.insert_one({"file_id": "fx", "user_id": user_id, "is_default": True,
+                                        "uploaded_at": datetime.now(timezone.utc)})
+    for a in SHEET_ACCTS:
+        await db.user_account_data.insert_one({**a, "file_id": "fx", "user_id": user_id})
+
+
+async def _parse(client, db, text):
+    me = (await client.get("/api/auth/me")).json()
+    await _seed(db, me["user_id"])
+    r = await client.post("/api/activity-sheets/parse-text", json={"text": text})
+    assert r.status_code == 200, r.text
+    return r.json()["data"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", [
+    "Sno\tDate\tRegarding\tTime\tNotes\n1\t11-10-2026\tneuland\t11:00 AM\tx\n2\t27-Apr-26\tAurobindo\t11:30\ty",
+    "1\t11-10-2026\tneuland\t11:00 AM\tx\n2\t27-Apr-26\tAurobindo\t11:30\ty",                     # no header row
+    "Sno,Date,Regarding,Time,Notes\n1,11-10-2026,neuland,11:00 AM,x\n2,27-Apr-26,Aurobindo,11:30,y",
+    '[{"Sno":1,"Date":"11-10-2026","Regarding":"neuland","Time":"11:00 AM","Notes":"x"},'
+    ' {"Sno":2,"Date":"27-Apr-26","Regarding":"Aurobindo","Time":"11:30","Notes":"y"}]',
+    '{"rows":[{"Date":"11-10-2026","Account":"neuland"},{"Date":"27-Apr-26","Account":"Aurobindo"}]}',  # JSON, no serial
+])
+async def test_every_paste_format_tags_accounts(auth_client, db, text):
+    data = await _parse(auth_client, db, text)
+    got = [(r["account_match"]["status"], r["account_match"]["mdm_id"]) for r in data["new_rows"]]
+    assert got == [("fuzzy", "PA1"), ("fuzzy", "PA2")]
+
+
+@pytest.mark.asyncio
+async def test_reused_serial_numbers_are_not_mistaken_for_logged_rows(auth_client, db):
+    me = (await auth_client.get("/api/auth/me")).json()
+    await db.activity_sheet_log.insert_one({"user_id": me["user_id"], "serial_no": "1", "d365_status": "success",
+                                           "regarding": "SOME OTHER ACCOUNT", "date": "01-01-2026"})
+    data = await _parse(auth_client, db, "Sno\tDate\tRegarding\n1\t11-10-2026\tneuland")
+    assert data["total_new"] == 1 and data["total_duplicate"] == 0

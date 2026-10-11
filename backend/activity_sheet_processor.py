@@ -11,6 +11,7 @@ Expected columns (case-insensitive, flexible aliases):
 """
 import csv
 import io
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -55,11 +56,47 @@ def map_columns(headers: List[str]) -> Dict[str, str]:
     return mapping
 
 
+# The agreed sheet layout, used when pasted rows arrive without a header line.
+DEFAULT_ORDER = ["serial_no", "date", "regarding", "time", "notes"]
+
+
+def resolve_columns(
+    headers: List[str], rows: List[Dict[str, str]]
+) -> Tuple[List[Dict[str, str]], Dict[str, str]]:
+    """Map headers to fields. If no account column is recognisable, the first line was data
+    (Excel copy without the header row): re-read everything in DEFAULT_ORDER."""
+    mapping = map_columns(headers)
+    if "regarding" in mapping or "mdm_id" in mapping or not (3 <= len(headers) <= 6):
+        return rows, mapping
+    fields = DEFAULT_ORDER[:len(headers)]
+    fixed = [dict(zip(fields, headers))]
+    fixed += [dict(zip(fields, [str(r.get(h, "") or "") for h in headers])) for r in rows]
+    return fixed, {f: f for f in fields}
+
+
+def _parse_json(text: str) -> Tuple[List[str], List[Dict[str, str]]]:
+    """A JSON array of row objects, or an object holding one (e.g. {"rows": [...]})."""
+    data = json.loads(text)
+    if isinstance(data, dict):
+        data = next((v for v in data.values() if isinstance(v, list)), [data])
+    rows = [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+    headers: List[str] = []
+    for r in rows:
+        headers += [k for k in r if k not in headers]
+    return headers, [{h: "" if r.get(h) is None else str(r.get(h)) for h in headers} for r in rows]
+
+
 def parse_text(text: str) -> Tuple[List[str], List[Dict[str, str]]]:
-    """Parse pasted text — supports markdown tables, TSV (Excel copy-paste), and CSV."""
-    text = text.strip()
+    """Parse pasted text — JSON, markdown tables, TSV (Excel copy-paste), and CSV."""
+    text = text.strip().lstrip("﻿")
     if not text:
         return [], []
+
+    if text[0] in "[{":
+        try:
+            return _parse_json(text)
+        except (ValueError, TypeError):
+            pass  # not JSON after all — fall through to the table parsers
 
     lines = [l for l in text.splitlines() if l.strip()]
     if not lines:
@@ -137,6 +174,10 @@ def normalize_rows(
         # Ensure all canonical fields exist
         for field in COLUMN_ALIASES:
             row.setdefault(field, "")
+        if not any(row.values()):
+            continue  # blank line inside the paste
+        if not row["serial_no"]:
+            row["serial_no"] = str(len(result) + 1)  # sheets without a serial column
         result.append(row)
     return result
 

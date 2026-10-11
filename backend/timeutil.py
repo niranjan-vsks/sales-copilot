@@ -19,6 +19,8 @@ _DATE_FORMATS = [
     "%d-%b-%Y", "%d/%b/%Y", "%d %b %Y", "%B %d %Y",
     # Excel's short display: 27-Apr-26, 27/04/26
     "%d-%b-%y", "%d/%b/%y", "%d %b %y", "%d-%m-%y", "%d/%m/%y",
+    # Real date cells in an uploaded .xlsx arrive as datetimes: "2026-04-27 00:00:00"
+    "%Y-%m-%d %H:%M:%S",
 ]
 _TIME_FORMATS = ["%I:%M %p", "%H:%M", "%I:%M%p", "%I %p", "%H:%M:%S"]
 

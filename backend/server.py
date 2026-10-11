@@ -958,14 +958,18 @@ async def chat(request: Request, body: ChatRequest):
             # Regarding. Ambiguous names are refused rather than guessed (B09, B10).
             account_name = params.get("account", "")
             ambiguous = None
-            if account_name and not params.get("mdm_id"):
+            if account_name or params.get("mdm_id"):
                 default_file = await _active_account_file(user.user_id)
                 if default_file:
                     file_accounts = await db.user_account_data.find(
                         {"user_id": user.user_id, "file_id": default_file["file_id"]},
                         {"_id": 0, "account_name": 1, "l2_mdm_id_idg": 1, "l2_mdm_id_isg": 1},
                     ).to_list(50000)
-                    match = account_match.resolve(account_name, file_accounts)
+                    # An MDM ID from the AI is trusted only if it is in the user's list (no invented IDs).
+                    match = account_match.resolve_row(account_name, params.get("mdm_id", ""), file_accounts)
+                    if match["status"] == "mdm":
+                        params.pop("mdm_id", None)
+                        match = account_match.resolve(account_name, file_accounts)
                     if match["status"] in ("exact", "fuzzy"):
                         params["account"] = match["account_name"]
                         params["mdm_id"] = account_match.pick_mdm(
@@ -977,11 +981,14 @@ async def chat(request: Request, body: ChatRequest):
                         ambiguous = match
 
             if ambiguous:
-                names = ", ".join(c["account_name"] for c in ambiguous["candidates"])
+                names = "; ".join(
+                    f"{c['account_name']} (MDM {c['mdm_id_idg'] or c['mdm_id_isg'] or 'n/a'})"
+                    for c in ambiguous["candidates"])
+                ask = f"'{account_name}' matches more than one account: {names}. Reply with the one you mean (name or MDM ID) and I will log it."
                 workflow_result = {
                     "status": "failed", "error_code": "ACCOUNT_AMBIGUOUS",
-                    "error_message": f"'{account_name}' matches more than one account ({names}). Use the exact account name.",
-                    "error": f"'{account_name}' matches more than one account ({names}). Use the exact account name.",
+                    "error_message": ask,
+                    "error": ask,
                     "candidates": ambiguous["candidates"],
                 }
             else:
@@ -2042,6 +2049,7 @@ async def search_accounts(request: Request, q: str = "", limit: int = Query(defa
 from activity_sheet_processor import (  # noqa: E402
     parse_text as _sheet_parse_text,
     map_columns as _sheet_map_columns,
+    resolve_columns as _sheet_resolve_columns,
     normalize_rows as _sheet_normalize_rows,
     summarize_notes as _sheet_summarize_notes,
 )
@@ -2055,11 +2063,9 @@ async def parse_activity_sheet_text(body: ActivitySheetParseRequest, request: Re
     if not raw_rows:
         raise HTTPException(status_code=422, detail="No rows detected. Paste tab-separated, CSV, or markdown-table data.")
 
-    col_mapping = _sheet_map_columns(headers)
-    if "serial_no" not in col_mapping:
-        raise HTTPException(status_code=422, detail="Could not detect a Serial No column (expected: Serial No, Sno, S.No, ID).")
+    raw_rows, col_mapping = _sheet_resolve_columns(headers, raw_rows)
     if "regarding" not in col_mapping and "mdm_id" not in col_mapping:
-        raise HTTPException(status_code=422, detail="Could not detect a Regarding / Account or MDM ID column.")
+        raise HTTPException(status_code=422, detail="Could not find an account column. Use headers like Regarding / Account / Customer, or an MDM ID column.")
 
     rows = _sheet_normalize_rows(raw_rows, col_mapping)
     return await _classify_rows(user.user_id, rows, col_mapping)
@@ -2085,11 +2091,9 @@ async def parse_activity_sheet_file(request: Request, file: UploadFile = File(..
         raise HTTPException(status_code=422, detail="File is empty or has no data rows.")
 
     str_rows = [{k: str(v) if v is not None else "" for k, v in row.items()} for row in raw_rows]
-    col_mapping = _sheet_map_columns(columns)
-    if "serial_no" not in col_mapping:
-        raise HTTPException(status_code=422, detail="Could not detect a Serial No column (expected: Serial No, Sno, S.No, ID).")
+    str_rows, col_mapping = _sheet_resolve_columns(columns, str_rows)
     if "regarding" not in col_mapping and "mdm_id" not in col_mapping:
-        raise HTTPException(status_code=422, detail="Could not detect a Regarding / Account or MDM ID column.")
+        raise HTTPException(status_code=422, detail="Could not find an account column. Use headers like Regarding / Account / Customer, or an MDM ID column.")
 
     rows = _sheet_normalize_rows(str_rows, col_mapping)
     return await _classify_rows(user.user_id, rows, col_mapping)
@@ -2148,21 +2152,26 @@ async def _classify_rows(user_id: str, rows: List[Dict[str, Any]], col_mapping: 
     serial_nos = [r["serial_no"] for r in rows if r.get("serial_no")]
     existing = await db.activity_sheet_log.find(
         {"user_id": user_id, "serial_no": {"$in": serial_nos}},
-        {"serial_no": 1, "d365_status": 1, "_id": 0},
+        {"serial_no": 1, "d365_status": 1, "regarding": 1, "date": 1, "_id": 0},
     ).to_list(10000)
-    confirmed = {e["serial_no"] for e in existing if e.get("d365_status") == "success"}
-    unverified = {e["serial_no"] for e in existing if e.get("d365_status") in ("unverified", "pending")}
+    logged = {e["serial_no"]: e for e in existing}
 
     accounts = await _load_default_accounts(user_id)
     new_rows, dup_rows, unverified_rows = [], [], []
     for r in rows:
-        serial = r.get("serial_no")
-        if serial in confirmed:
+        match = _match_summary(account_match.resolve_row(r.get("regarding", ""), r.get("mdm_id", ""), accounts))
+        prior = logged.get(r.get("serial_no"))
+        # Serial numbers restart at 1 in every sheet: only the same serial for the same account
+        # on the same date is a repeat. Anything else is a new meeting.
+        same = prior is not None and (
+            not (prior.get("date") or prior.get("regarding"))   # old entry without details: treat as same
+            or ((prior.get("date") or "") == (r.get("date") or "") and account_match.normalize(prior.get("regarding", ""))
+                in {account_match.normalize(match["account_name"]), account_match.normalize(r.get("regarding", ""))}))
+        if same and prior.get("d365_status") == "success":
             dup_rows.append(r)
             continue
-        r = {**r, "account_match": _match_summary(
-            account_match.resolve_row(r.get("regarding", ""), r.get("mdm_id", ""), accounts))}
-        (unverified_rows if serial in unverified else new_rows).append(r)
+        r = {**r, "account_match": match}
+        (unverified_rows if same and prior.get("d365_status") in ("unverified", "pending") else new_rows).append(r)
     return {
         "success": True,
         "data": {
