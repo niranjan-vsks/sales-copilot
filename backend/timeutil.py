@@ -17,6 +17,8 @@ _DEFAULT_TZ = "Asia/Kolkata"
 _DATE_FORMATS = [
     "%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%m/%d/%Y",
     "%d-%b-%Y", "%d/%b/%Y", "%d %b %Y", "%B %d %Y",
+    # Excel's short display: 27-Apr-26, 27/04/26
+    "%d-%b-%y", "%d/%b/%y", "%d %b %y", "%d-%m-%y", "%d/%m/%y",
 ]
 _TIME_FORMATS = ["%I:%M %p", "%H:%M", "%I:%M%p", "%I %p", "%H:%M:%S"]
 

@@ -95,7 +95,7 @@ class KnowledgeBaseService:
         # Default file
         default_file_doc = await self.db.uploaded_files.find_one(
             {"user_id": user_id, "is_default": True}
-        )
+        ) or await self.db.uploaded_files.find_one({"user_id": user_id}, sort=[("uploaded_at", -1)])
         default_file = None
         if default_file_doc:
             ts = default_file_doc.get("uploaded_at")

@@ -62,17 +62,35 @@ function JobRowOutcome({ row }) {
   );
 }
 
-function AccountMatchCell({ match }) {
+function AccountMatchCell({ match, onPick }) {
   if (!match) return <span className="text-[#9CA3AF]/50">—</span>;
-  if (match.status === 'exact' || match.status === 'fuzzy') {
+  if (match.status === 'exact' || match.status === 'fuzzy' || match.status === 'mdm') {
+    const label = match.status === 'fuzzy' ? `${Math.round(match.score * 100)}%`
+      : match.status === 'mdm' ? 'by MDM ID' : 'exact';
     return (
-      <span className="text-[#22c55e]" title={match.mdm_id ? `MDM ${match.mdm_id}` : undefined}>
+      <span className="text-[#22c55e]">
         {match.account_name}
-        <span className="ml-1.5 text-[10px] opacity-80">{match.status === 'exact' ? 'exact' : `${Math.round(match.score * 100)}%`}</span>
+        <span className="ml-1.5 text-[10px] opacity-80">{label}</span>
+        {match.mdm_id && <span className="block text-[10px] font-mono text-[#9CA3AF]">MDM {match.mdm_id}</span>}
       </span>
     );
   }
   if (match.status === 'ambiguous') {
+    const options = match.candidate_options || [];
+    if (onPick && options.length) {
+      return (
+        <select
+          defaultValue=""
+          onChange={(e) => { const o = options[Number(e.target.value)]; if (o) onPick(o); }}
+          className="bg-[#0f0f10] border border-[#f59e0b]/40 text-[#f59e0b] text-xs rounded-none px-1.5 py-1 max-w-[220px]"
+        >
+          <option value="" disabled>Pick account ({options.length})</option>
+          {options.map((o, i) => (
+            <option key={`${o.mdm_id}-${i}`} value={i}>{o.account_name}{o.mdm_id ? ` · ${o.mdm_id}` : ''}</option>
+          ))}
+        </select>
+      );
+    }
     return (
       <span className="text-[#f59e0b]" title={(match.candidates || []).join(', ')}>
         Ambiguous ({(match.candidates || []).length})
@@ -124,6 +142,18 @@ export default function FileManagementPage() {
   const [sheetFile, setSheetFile]           = useState(null);
   const [sheetParsing, setSheetParsing]     = useState(false);
   const [sheetParseResult, setSheetParseResult] = useState(null); // { new_rows, duplicate_rows, unverified_rows, total_new, total_duplicate, total_unverified }
+
+  // Ambiguous row → user picks the account; its MDM ID travels with the row and the backend trusts it.
+  const pickSheetAccount = (serialNo, option) => {
+    const apply = (rows) => (rows || []).map((r) => (r.serial_no !== serialNo ? r : {
+      ...r,
+      mdm_id: option.mdm_id,
+      account_match: { status: 'exact', account_name: option.account_name, mdm_id: option.mdm_id, score: 1 },
+    }));
+    setSheetParseResult((prev) => prev && {
+      ...prev, new_rows: apply(prev.new_rows), unverified_rows: apply(prev.unverified_rows),
+    });
+  };
   const [sheetDragOver, setSheetDragOver]   = useState(false);
   const sheetFileInputRef = useRef(null);
 
@@ -893,7 +923,7 @@ export default function FileManagementPage() {
                               <td className="px-3 py-1.5 text-[#F2F3F5]">{row.date ?? '—'}</td>
                               <td className="px-3 py-1.5 text-[#9CA3AF]">{row.time ?? '—'}</td>
                               <td className="px-3 py-1.5 text-[#F2F3F5]">{row.regarding ?? '—'}</td>
-                              <td className="px-3 py-1.5"><AccountMatchCell match={row.account_match} /></td>
+                              <td className="px-3 py-1.5"><AccountMatchCell match={row.account_match} onPick={(o) => pickSheetAccount(row.serial_no, o)} /></td>
                               <td className="px-3 py-1.5 text-[#9CA3AF] hidden md:table-cell">
                                 {row.notes ? (row.notes.length > 60 ? `${row.notes.slice(0, 60)}…` : row.notes) : '—'}
                               </td>

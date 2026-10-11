@@ -909,6 +909,11 @@ async def chat(request: Request, body: ChatRequest):
     except Exception as ctx_err:
         logger.warning("Failed to build context snapshot: %s", ctx_err)
         context_snapshot = {}
+    try:
+        context_snapshot["account_lookup"] = account_match.lookup_in_text(
+            body.message, await _load_default_accounts(user.user_id))
+    except Exception as lookup_err:
+        logger.warning("Account lookup for chat failed: %s", lookup_err)
 
     try:
         ai_response = await process_message(
@@ -954,9 +959,7 @@ async def chat(request: Request, body: ChatRequest):
             account_name = params.get("account", "")
             ambiguous = None
             if account_name and not params.get("mdm_id"):
-                default_file = await db.uploaded_files.find_one(
-                    {"user_id": user.user_id, "is_default": True}, {"file_id": 1}
-                )
+                default_file = await _active_account_file(user.user_id)
                 if default_file:
                     file_accounts = await db.user_account_data.find(
                         {"user_id": user.user_id, "file_id": default_file["file_id"]},
@@ -1689,9 +1692,7 @@ async def _resolve_rule_accounts(rule: Dict[str, Any], user_id: str) -> List[Dic
     """Return account dicts this rule targets, from the user's default file."""
     account_filter = rule.get("account_filter", "all")
 
-    default_file = await db.uploaded_files.find_one(
-        {"user_id": user_id, "is_default": True}, {"file_id": 1}
-    )
+    default_file = await _active_account_file(user_id)
     if default_file:
         file_id = default_file["file_id"]
         base_q: Dict[str, Any] = {"user_id": user_id, "file_id": file_id}
@@ -2003,9 +2004,7 @@ async def search_accounts(request: Request, q: str = "", limit: int = Query(defa
     user = await require_auth(request)
 
     # Try user_account_data (new /api/files/upload-accounts flow)
-    default_file = await db.uploaded_files.find_one(
-        {"user_id": user.user_id, "is_default": True}, {"file_id": 1}
-    )
+    default_file = await _active_account_file(user.user_id)
     if default_file:
         query: Dict[str, Any] = {"user_id": user.user_id, "file_id": default_file["file_id"]}
         if q:
@@ -2059,8 +2058,8 @@ async def parse_activity_sheet_text(body: ActivitySheetParseRequest, request: Re
     col_mapping = _sheet_map_columns(headers)
     if "serial_no" not in col_mapping:
         raise HTTPException(status_code=422, detail="Could not detect a Serial No column (expected: Serial No, Sno, S.No, ID).")
-    if "regarding" not in col_mapping:
-        raise HTTPException(status_code=422, detail="Could not detect a Regarding / Account column.")
+    if "regarding" not in col_mapping and "mdm_id" not in col_mapping:
+        raise HTTPException(status_code=422, detail="Could not detect a Regarding / Account or MDM ID column.")
 
     rows = _sheet_normalize_rows(raw_rows, col_mapping)
     return await _classify_rows(user.user_id, rows, col_mapping)
@@ -2089,18 +2088,28 @@ async def parse_activity_sheet_file(request: Request, file: UploadFile = File(..
     col_mapping = _sheet_map_columns(columns)
     if "serial_no" not in col_mapping:
         raise HTTPException(status_code=422, detail="Could not detect a Serial No column (expected: Serial No, Sno, S.No, ID).")
-    if "regarding" not in col_mapping:
-        raise HTTPException(status_code=422, detail="Could not detect a Regarding / Account column.")
+    if "regarding" not in col_mapping and "mdm_id" not in col_mapping:
+        raise HTTPException(status_code=422, detail="Could not detect a Regarding / Account or MDM ID column.")
 
     rows = _sheet_normalize_rows(str_rows, col_mapping)
     return await _classify_rows(user.user_id, rows, col_mapping)
 
 
+async def _active_account_file(user_id: str) -> Optional[Dict[str, Any]]:
+    """The account list used for matching: the default file, else the most recent upload.
+
+    Uploading never set a default by itself, so a user who skipped "Set default" matched nothing."""
+    doc = await db.uploaded_files.find_one({"user_id": user_id, "is_default": True}, {"file_id": 1})
+    if doc:
+        return doc
+    return await db.uploaded_files.find_one(
+        {"user_id": user_id}, {"file_id": 1}, sort=[("uploaded_at", -1)]
+    )
+
+
 async def _load_default_accounts(user_id: str) -> List[Dict[str, Any]]:
     """Accounts of the user's default uploaded file (name + both MDM IDs), or []."""
-    default_file = await db.uploaded_files.find_one(
-        {"user_id": user_id, "is_default": True}, {"file_id": 1}
-    )
+    default_file = await _active_account_file(user_id)
     if not default_file:
         return []
     return await db.user_account_data.find(
@@ -2121,6 +2130,11 @@ def _match_summary(match: Dict[str, Any]) -> Dict[str, Any]:
     }
     if match["status"] == "ambiguous":
         summary["candidates"] = [c["account_name"] for c in match["candidates"]]
+        # Picker options: choosing one sets the row's mdm_id, which resolve_row() then trusts.
+        summary["candidate_options"] = [
+            {"account_name": c["account_name"],
+             "mdm_id": c["mdm_id_idg"] or c["mdm_id_isg"]} for c in match["candidates"]
+        ]
     return summary
 
 
@@ -2146,7 +2160,8 @@ async def _classify_rows(user_id: str, rows: List[Dict[str, Any]], col_mapping: 
         if serial in confirmed:
             dup_rows.append(r)
             continue
-        r = {**r, "account_match": _match_summary(account_match.resolve(r.get("regarding", ""), accounts))}
+        r = {**r, "account_match": _match_summary(
+            account_match.resolve_row(r.get("regarding", ""), r.get("mdm_id", ""), accounts))}
         (unverified_rows if serial in unverified else new_rows).append(r)
     return {
         "success": True,
@@ -2239,8 +2254,8 @@ async def _run_activity_sheet_job(
         notes_summary = notes_raw
 
         try:
-            match = account_match.resolve(regarding, account_cache)
-            if match["status"] not in ("exact", "fuzzy"):
+            match = account_match.resolve_row(regarding, row.get("mdm_id", ""), account_cache)
+            if match["status"] not in ("exact", "fuzzy", "mdm"):
                 if not account_cache:
                     code, message = "ACCOUNT_NOT_FOUND", "No account list uploaded. Upload your accounts in File Management first."
                 elif match["status"] == "ambiguous":

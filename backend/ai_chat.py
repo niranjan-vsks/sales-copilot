@@ -84,13 +84,22 @@ def _build_live_state(context: Dict[str, Any]) -> str:
 
     total_acc = context.get("total_accounts_cached", 0)
 
+    # Accounts from the uploaded list that the user's message refers to (by name or MDM ID).
+    looked_up = context.get("account_lookup") or []
+    lookup_lines = "\n".join(
+        f"  - {a['account_name']} | MDM IDG: {a.get('mdm_id_idg') or '-'} | MDM ISG: {a.get('mdm_id_isg') or '-'}"
+        for a in looked_up
+    ) or "  None matched in the uploaded account list"
+
     return (
         f"- Webhook: {webhook_line}\n"
         f"- Default Account File: {file_line}\n"
         f"- Total Accounts Cached: {total_acc}\n"
         f"- Cookie Session: {cookie_line}\n"
         f"- Last Activity Created: {last_act_line}\n"
-        f"- Recent Workflows:\n{recent_lines}"
+        f"- Recent Workflows:\n{recent_lines}\n"
+        f"- Accounts relevant to this message (from the uploaded list; use these exact names and MDM IDs; "
+        f"if several fit, ask the user which one):\n{lookup_lines}"
     )
 
 

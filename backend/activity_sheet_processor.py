@@ -25,6 +25,8 @@ COLUMN_ALIASES: Dict[str, List[str]] = {
     "regarding":        ["regarding", "account", "company", "account name", "customer", "customer name", "client"],
     "notes":            ["notes", "note", "description", "details", "remarks", "comments", "discussion"],
     "primary_attendee": ["primary lenovo attendee", "lenovo attendee", "attendee", "rep", "primary attendee"],
+    # Matched only by headers containing "mdm" (see map_columns) — "id" alone is the serial column.
+    "mdm_id":           ["mdm id", "mdm"],
 }
 
 
@@ -37,8 +39,11 @@ def map_columns(headers: List[str]) -> Dict[str, str]:
     mapping: Dict[str, str] = {}
     for header in headers:
         norm = _normalize(header)
+        if "mdm" in norm:
+            mapping.setdefault("mdm_id", header)
+            continue
         for field, aliases in COLUMN_ALIASES.items():
-            if field in mapping:
+            if field in mapping or field == "mdm_id":
                 continue
             if norm in aliases:
                 mapping[field] = header
