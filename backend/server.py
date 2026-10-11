@@ -218,6 +218,16 @@ async def get_current_user(request: Request) -> Optional[User]:
         )
         if not user_doc:
             return None
+        # authorized_users is where admins grant roles (Team page / signup); users.role is only
+        # copied at login. Read the grant live so a role change applies without re-login.
+        email = user_doc.get("email", "")
+        auth_doc = await db.authorized_users.find_one(
+            {"email": {"$in": list({email, email.lower()})}}, {"_id": 0, "role": 1}
+        )
+        granted_role = (auth_doc or {}).get("role")
+        if granted_role and granted_role != user_doc.get("role"):
+            user_doc["role"] = granted_role
+            await db.users.update_one({"user_id": user_doc["user_id"]}, {"$set": {"role": granted_role}})
         return User(**user_doc)
     except (ServerSelectionTimeoutError, PyMongoError) as e:
         logger.error(f"MongoDB unavailable in get_current_user: {e}")

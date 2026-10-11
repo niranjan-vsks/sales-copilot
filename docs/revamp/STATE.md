@@ -113,6 +113,7 @@ Source: Railway CLI `deployment list` (MCP not loaded in session; CLI is logged 
 - 2026-10-09 — Pre-approved dependencies: `tzdata`, `google-genai`, `mcp`; dev: `pytest`, `pytest-asyncio`, `respx`, `mongomock-motor`. Pre-approved collections: `crm_field_maps`, `crm_connections`, `crm_outbox`.
 
 ## Log (newest first, one line each)
+- 2026-10-11 — HOTFIX (user-requested, outside phases): admin grants in `authorized_users` now apply live — `get_current_user` reads the role from `authorized_users` and syncs `users.role` (was only copied at login, so signed-up users stayed `rep`). Test `tests/backend/test_hotfix_admin_role.py`; 141 pass.
 - 2026-10-11 — P3 built (T1–T8), gates G1–G6 green, shipped to `main`; authenticated prod smoke pending → P3 stays GATE. Groq `llama-3.1-8b-instant` is retired: default now `qwen/qwen3.8-27b`; user must check Railway `GROQ_MODEL`. See HANDOFF 'P3 handoff'.
 - 2026-10-11 — P3 started (Sonnet 5.5, unattended). User waived the remaining P0 user tasks for P3 (uses only the P0 harness). Worktree `../loop-p3` from `origin/main` `8848f1d`. P4 not to be started.
 - 2026-10-10 — P1 shipped to `main` (`9d5827b`) and live: version/healthz/www/login-page/CORS-PATCH preflight verified on prod. Authenticated prod smoke (login, dashboard, Profile name PATCH) still needed → P1 stays GATE. P2 not started (needs P1 DONE + real `field_map.json` + generic flow).
