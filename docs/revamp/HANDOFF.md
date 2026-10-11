@@ -61,6 +61,46 @@ Rules: [DOCTRINE.md §6](DOCTRINE.md). Overwrite "Current handoff" at the end of
 - Test-support fixture `flow_url` (tests/backend/p1_support.py) runs the fake flow on a real local port; set `FAKE_FLOW_MODE` with `monkeypatch.setenv`.
 - Root `CLAUDE.md` / `AGENT.md` are unrelated Jetro content.
 
+## P3 handoff (parallel lane — Model Layer)
+
+**From:** Claude (Sonnet 5.5), P3 session, 2026-10-11, unattended. P1's handoff above is untouched (P1 is still at GATE).
+**Phase:** P3 Model Layer — T1–T8 built; G1–G6 green; G7 partial → P3 stays **GATE** (authenticated prod smoke needs credentials).
+**Branch:** `revamp/p3-model-layer` (worktree `../loop-p3`), shipped to `main` by fast-forward push.
+**Dependency note:** user waived P0's open user tasks for P3 (P3 only uses the P0 harness). P4 was **not** started (P2 is not DONE and the user said not to).
+
+**Done**
+- `backend/llm/`: `base.py` (LLMMessage/LLMResult/LLMUnavailable, call-time env), `groq_provider.py`, `gemini_provider.py` (lazy SDK import; roles user/model; system → `system_instruction`; json → `response_mime_type`; retries once without `temperature` if the model rejects it), `router.py` (`primary_name/fallback_name`, `complete_json` = primary → validate → one repair call → fallback → `LLMUnavailable`; `complete_text` returns an `LLMResult`), `schemas.py` (`ChatDecision`).
+- `ai_chat.process_message` keeps its signature and return keys; never raises (LLM failure → the existing "trouble processing" clarification, so the chat route no longer 500s on a missing/invalid key). Incomplete triggers (no subject/account, bad duration, no rows) are downgraded to a clarification in the schema.
+- Enabled-types contract is enforced in code: if the model picks a type not in `context["enabled_activity_types"]` (default `["appointment"]`) the reply is coerced to an appointment and the message says so. P4 will feed the real list; until then phone calls/tasks are logged as appointments, same as before P3.
+- Prompt: phonecall/task mapping, `__ENABLED_TYPES__`, default subjects ("Customer Meeting - <account>", "Call with <account>", "Follow-up - <account>").
+- `summarize_notes` uses `complete_text` (0.2 temp, 300 tokens); `groq_client`/`model` args are accepted and ignored; raw notes returned on failure.
+- Tests: `tests/backend/test_p3_*.py` + `p3_support.py` (51 tests, no network). Full suite: 138 passed, 1 skipped (live Groq test, needs `REAL_GROQ_API_KEY`).
+
+**IMPORTANT findings for the user**
+1. **Groq retired `llama-3.1-8b-instant`.** With the project's Groq key the call returns 404 `model_not_found`, and the key's model list has no Llama model. Unless Railway sets `GROQ_MODEL` to something valid, **production chat has probably been answering "I'm having trouble processing that" since the retirement** (the old code swallowed the 404; not verified on prod, which needs a login). P3 changes the default to `qwen/qwen3.8-27b` (tested: correct JSON for meeting/call/task/question/pasted table, faithful note summaries, 0.3–1 s). `openai/gpt-oss-120b` was rejected: it invented details in a summary. **Action: in Railway → `sales-copilot-api` → Variables, delete `GROQ_MODEL` if it is set to `llama-3.1-8b-instant`.**
+2. Gemini default model is `gemini-3.6-flash` (Google lists it as the current stable Flash; `gemini-2.5-flash` has an announced shutdown on 2026-10-16 and was returning 404s for some accounts in July). The Gemini path was only tested against SDK stubs; **no real `GEMINI_API_KEY` was available**. Click path 5 not run.
+3. Gemini docs say sampling params (`temperature`) are deprecated on newer models; the provider retries without it when the error mentions temperature.
+
+**Next step (exact)**
+1. User: add `GEMINI_API_KEY` (optionally `GEMINI_MODEL`) in Railway when ready; do the Railway `GROQ_MODEL` check above.
+2. Run the authenticated prod smoke: log in, open AI Agent, ask "How many accounts do I have?" (the answer must not be the "trouble processing" text), no console errors. Then set P3 DONE in STATE.md.
+3. Optional once a Gemini key exists: `LLM_PROVIDER=auto` locally → log line `LLM json ok provider=gemini`.
+
+**Scope requests (server.py is not P3's)**
+- `server._run_activity_sheet_job` still builds `AsyncGroq(...)` from `GROQ_API_KEY` and only calls `summarize_notes` when that client exists (`if groq_client and notes_raw`). With Gemini as primary and no Groq key, notes would not be summarised. Fix in P2/P5: drop the client, call `summarize_notes(notes, regarding, date_str)` unconditionally (it already falls back to raw notes), and remove the `GROQ_MODEL` use there.
+- Chat-triggered activities do not write `workflow_executions` (pre-existing; `GET /api/workflows/executions` does not list them). Belongs to P2's service.
+- Root `requirements.txt` (Render legacy) still lacks `google-genai` and `tzdata`; harmless for Railway (uses `backend/requirements.txt`), Gemini would just be unavailable there.
+
+**Gate results**
+- G1: `python -m compileall -q backend` ok; `python -m flake8 backend --select=E9,F63,F7,F82` ok. Frontend untouched (no build needed).
+- G2: `python -m pytest tests -q` → 138 passed, 1 skipped.
+- G3 (wiring): `POST /api/chat` — caller `frontend/src/pages/ChatPage.js` (`api.post('/chat', {message})`) — request shape unchanged — response keys unchanged (`action, workflow_triggered, workflow_result, clarification_needed, message`); `workflow_triggered` may now be `phonecall`/`task` only when the enabled list contains them (WorkflowCard prints any string) — reads/writes `chat_history`, reads `app_knowledge_base` snapshot via `kb` — indexes unchanged. `POST /api/activity-sheets/execute` (FileManagementPage `handleSheetExecute`) — unchanged contract; notes now summarised through `llm.router`. Dangling refs: `grep -rn "_get_groq_client\|ai_chat.GROQ_MODEL" backend tests scripts` → none.
+- G4 (local, HTTP click paths against the real `server.py` over uvicorn, Mongo = in-memory mongomock, **not Atlas**, fake flow `/legacy`, real Groq key from the main `.env`, never printed; the frontend is untouched so no browser run): meeting → appointment, status success, subject "Customer Meeting - Acme Corp"; call → coerced to appointment with the "Logging this as an appointment…" message (default enabled list); task → same; "log a meeting" → asks for the account, nothing sent; webhook/accounts question → correct answer from live state; activity sheet with notes → job `complete {done:1}` and the fake flow received the summarised text; bad Groq key + `LLM_FALLBACK=none` → HTTP 200 with the graceful message, no 500. One unexplained 20 s `TimeoutError` on the first request of a freshly started server in the bad-key run (the router handled it and returned the graceful message; not reproducible standalone or on the second request).
+- G5 (data audit, in-memory): `chat_history` 5 user / 5 assistant rows, assistant `workflow_result.status` = success x3, else none; `activity_sheet_jobs` job complete `{total:1, done:1, failed:0}`, no `pending` rows; fake flow store holds the expected records, no duplicates.
+- G6 (diff audit): no secrets/tenant data/URLs; no new endpoints; provider error strings are reduced to exception type names in `LLMUnavailable` and logs; prompts and model output are not logged; user text only goes to the configured LLM providers; keys are read from env at call time.
+- G7: see the "G7" line appended below after the push.
+
 ## Handoff log
+- 2026-10-11 — Sonnet 5.5 — P3 T1–T8 built, G1–G6 green; G7 partial (see P3 handoff).
 - 2026-10-10 — Sonnet 5.5 — P1 T1–T9 built, G1–G6 green; G7 recorded in STATE.md.
 - 2026-10-09 — Opus 5.5 — specs written; awaiting BULLSEYE P0.

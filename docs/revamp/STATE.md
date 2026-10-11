@@ -15,7 +15,7 @@ Update rules: [DOCTRINE.md §6](DOCTRINE.md). Edit only your phase's rows plus t
 | P0 | Groundwork | IN PROGRESS | Claude Opus 5.5 / `revamp/p0-groundwork` (worktree `../loop-p0`) | — | — |
 | P1 | Truthful Logging | GATE | Claude Sonnet 5.5 / `revamp/p1-truthful-logging` (worktree `../loop-p1`) | P0 | P3 |
 | P2 | Universal Connector | NOT STARTED | — | P0, P1 | P3 |
-| P3 | Model Layer | IN PROGRESS | Claude Sonnet 5.5 / `revamp/p3-model-layer` (worktree `../loop-p3`) | P0 | P1, P2 |
+| P3 | Model Layer | GATE | Claude Sonnet 5.5 / `revamp/p3-model-layer` (worktree `../loop-p3`) | P0 | P1, P2 |
 | P4 | MCP Bridge | NOT STARTED | — | P2, P3 | — |
 | P5 | Restructure | NOT STARTED | — | P1–P4 | — |
 | P6 | Hardening | NOT STARTED | — | P5 | — |
@@ -69,6 +69,8 @@ Status values: `NOT STARTED` · `IN PROGRESS` · `GATE` (building done, running 
 (ID — phase — commit) e.g. `B12 — P1 — abc1234`
 B01, B02, B03, B04, B05, B06, B07, B08, B09, B10, B12, B13, B25 — P1 — closed in `e165266` (backend) + `7a2fdc3` (frontend) + `999e5cf` (hardening); B11 surfaced in the UI (legacy host flag + save rejection) — P1 (root cause still P0)
 
+D05 — P3 — `9f716e1`, `2d528aa`, `dbeb209`, `88a7df4` (chat + notes summariser on `llm.router`; `server.py` still builds an `AsyncGroq` client in `_run_activity_sheet_job` and gates summarising on it, see HANDOFF scope request); B19 for `ai_chat.py`/`llm/` (env read at call time) — P3 — `9f716e1`
+
 ---
 
 ## Root cause (filled by P0)
@@ -93,7 +95,13 @@ Source: Railway CLI `deployment list` (MCP not loaded in session; CLI is logged 
 - Railway auto-deploy branch: `main` for both `sales-copilot-api` and `sales-copilot-ui` (confirmed P0 from deployment metadata; project `outstanding-harmony`, env `production`; Railway source repo shows as `niranjan-vsks/sales-copilot`, same repo as `origin`).
 - Backend start command comes from `backend/railway.json` (`$PORT`); do not change (B26).
 - Flow variant: _A or B, decided in P0_.
-- LLM env (after P3): `LLM_PROVIDER` (auto), `LLM_FALLBACK` (groq), `GROQ_API_KEY`, `GROQ_MODEL`, `GEMINI_API_KEY` (user adds when ready), `GEMINI_MODEL`, `LLM_TIMEOUT_S`.
+- LLM env (P3, live in code): all read at call time.
+  - `LLM_PROVIDER` = `auto` (default: gemini iff `GEMINI_API_KEY` set, else groq) | `groq` | `gemini`.
+  - `LLM_FALLBACK` = `groq` (default) | `gemini` | `none`; never equal to the primary.
+  - `GROQ_API_KEY`; `GROQ_MODEL` default `qwen/qwen3.8-27b`. **`llama-3.1-8b-instant` (the old default) is retired by Groq: 404 `model_not_found` (verified 2026-10-11).** If Railway still has `GROQ_MODEL=llama-3.1-8b-instant`, delete or change that variable.
+  - `GEMINI_API_KEY` (user adds when ready); `GEMINI_MODEL` default `gemini-3.6-flash` (Google's current stable Flash id; `gemini-2.5-flash` has an announced Oct 16 2026 shutdown). Gemini path is only tested against stubs; no real key was available.
+  - `LLM_TIMEOUT_S` default `20` (per provider call).
+  - `backend/requirements.txt` gained `google-genai`; the root `requirements.txt` (Render legacy) did not (out of P3's files table). Gemini import is lazy, so a missing SDK only disables Gemini and falls back to Groq.
 - New env (P2): none required; flow URL/key are stored encrypted in Mongo via the admin UI. `DEFAULT_TIMEZONE` optional (default `Asia/Kolkata`, P1).
 
 ## Decisions (append-only)
@@ -105,6 +113,7 @@ Source: Railway CLI `deployment list` (MCP not loaded in session; CLI is logged 
 - 2026-10-09 — Pre-approved dependencies: `tzdata`, `google-genai`, `mcp`; dev: `pytest`, `pytest-asyncio`, `respx`, `mongomock-motor`. Pre-approved collections: `crm_field_maps`, `crm_connections`, `crm_outbox`.
 
 ## Log (newest first, one line each)
+- 2026-10-11 — P3 built (T1–T8), gates G1–G6 green, shipped to `main`; authenticated prod smoke pending → P3 stays GATE. Groq `llama-3.1-8b-instant` is retired: default now `qwen/qwen3.8-27b`; user must check Railway `GROQ_MODEL`. See HANDOFF 'P3 handoff'.
 - 2026-10-11 — P3 started (Sonnet 5.5, unattended). User waived the remaining P0 user tasks for P3 (uses only the P0 harness). Worktree `../loop-p3` from `origin/main` `8848f1d`. P4 not to be started.
 - 2026-10-10 — P1 shipped to `main` (`9d5827b`) and live: version/healthz/www/login-page/CORS-PATCH preflight verified on prod. Authenticated prod smoke (login, dashboard, Profile name PATCH) still needed → P1 stays GATE. P2 not started (needs P1 DONE + real `field_map.json` + generic flow).
 - 2026-10-10 — P1 started (Sonnet 5.5). User declared P0 done and said go ahead; P0 U1–U6/T6 are still unticked in STATE, so the P0 'DONE' dependency was waived by the user. P1 uses only P0 T1–T5 outputs (harness, fake flow); D365_SCHEMA.md status codes are unverified so spec defaults are used.
