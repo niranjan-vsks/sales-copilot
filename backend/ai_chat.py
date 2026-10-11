@@ -156,7 +156,14 @@ async def process_message(
     action = decision.action
     workflow_type = decision.workflow_type
     payload = dict(decision.payload)
+    user_message = decision.user_message
     if action == "trigger_workflow" and workflow_type in ACTIVITY_TYPES:
+        # The prompt asks for enabled types only; enforce it here too so the reply never claims a
+        # type the tenant cannot log.
+        enabled = (context_snapshot or {}).get("enabled_activity_types") or ["appointment"]
+        if workflow_type not in enabled:
+            workflow_type = "appointment" if "appointment" in enabled else enabled[0]
+            user_message = f"Logging this as {_article(workflow_type)}, the activity type enabled for your workspace."
         payload["activity_type"] = workflow_type
 
     return {
@@ -164,13 +171,17 @@ async def process_message(
         "workflow_type": workflow_type,
         "payload": payload,
         "clarification_needed": decision.clarification_needed,
-        "user_message": decision.user_message,
+        "user_message": user_message,
         # Legacy compat
         "workflow": "log-d365-activity" if action == "trigger_workflow" and workflow_type in ACTIVITY_TYPES else (
             "activity-sheet" if action == "trigger_workflow" and workflow_type == "activity_sheet" else None
         ),
         "params": payload,
     }
+
+
+def _article(activity_type: str) -> str:
+    return {"appointment": "an appointment", "phonecall": "a phone call", "task": "a task"}.get(activity_type, activity_type)
 
 
 def _fallback(msg: str) -> Dict[str, Any]:

@@ -81,10 +81,20 @@ async def test_process_message_keeps_legacy_keys_for_appointment(providers):
 
 
 @pytest.mark.asyncio
-async def test_process_message_phonecall_sets_activity_type(providers):
-    providers(groq=[decision_json(workflow_type="phonecall")])
-    out = await ai_chat.process_message("log a call with Acme", "u1", [])
+async def test_process_message_phonecall_when_enabled(providers):
+    providers(groq=[decision_json(workflow_type="phonecall", user_message="Logging the call.")])
+    ctx = {"enabled_activity_types": ["appointment", "phonecall"]}
+    out = await ai_chat.process_message("log a call with Acme", "u1", [], context_snapshot=ctx)
     assert out["workflow_type"] == "phonecall" and out["payload"]["activity_type"] == "phonecall"
+    assert out["user_message"] == "Logging the call."
+
+
+@pytest.mark.asyncio
+async def test_process_message_disabled_type_is_coerced_and_disclosed(providers):
+    providers(groq=[decision_json(workflow_type="phonecall", user_message="Logged the phone call.")])
+    out = await ai_chat.process_message("log a call with Acme", "u1", [])  # default: appointment only
+    assert out["workflow_type"] == "appointment" and out["payload"]["activity_type"] == "appointment"
+    assert out["user_message"].startswith("Logging this as an appointment")
 
 
 @pytest.mark.asyncio
@@ -153,7 +163,8 @@ async def test_chat_route_graceful_when_llm_unavailable(auth_client, clean_llm_e
 
 
 @pytest.mark.asyncio
-async def test_chat_route_trigger_reaches_executor(auth_client, providers, monkeypatch):
+@pytest.mark.parametrize("enabled, triggered", [(["appointment", "phonecall"], "phonecall"), (None, "appointment")])
+async def test_chat_route_trigger_reaches_executor(auth_client, providers, monkeypatch, enabled, triggered):
     import server
     seen = {}
 
@@ -161,12 +172,16 @@ async def test_chat_route_trigger_reaches_executor(auth_client, providers, monke
         seen.update(params)
         return {"status": "success", "d365_record_id": "rec-1"}
 
+    async def snapshot(user_id):
+        return {"enabled_activity_types": enabled} if enabled else {}
+
     monkeypatch.setattr(server, "_execute_d365_activity", fake_exec)
+    monkeypatch.setattr(server.kb, "get_app_context_snapshot", snapshot)
     providers(groq=[decision_json(workflow_type="phonecall")])
     r = await auth_client.post("/api/chat", json={"message": "log a call with Acme"})
     assert r.status_code == 200
     body = r.json()
-    assert body["workflow_triggered"] == "phonecall"
+    assert body["workflow_triggered"] == triggered
     assert body["workflow_result"]["status"] == "success"
     # Until P2 lands the server still logs every activity as an appointment.
     assert seen["account"] == "Acme" and seen["activity_type"] == "appointment"

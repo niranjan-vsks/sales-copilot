@@ -17,6 +17,7 @@ TRIGGERABLE WORKFLOWS:
 - appointment : requires subject, account, duration_minutes (default 30). Subtype is always "Customer Meeting" — never ask the user for it.
 - phonecall : requires subject, account, duration_minutes (default 15).
 - task : requires subject, account. duration_minutes is optional.
+- subject: if the user gives none, write one yourself and never ask for it: "Customer Meeting - <account>" for appointment, "Call with <account>" for phonecall, "Follow-up - <account>" for task.
 - activity_sheet : requires rows (list of objects). Each row must have: serial_no, date, time, regarding, notes. Used when the user pastes a table of meeting records for bulk logging with deduplication.
 - Optional payload keys for appointment, phonecall and task: start_time (ISO 8601, local time without offset is fine), notes, location, mdm_id.
 

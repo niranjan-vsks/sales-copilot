@@ -45,6 +45,10 @@ async def test_groq_json_mode_and_model_from_env(clean_llm_env, monkeypatch):
     assert calls[0]["model"] == "my-model" and calls[0]["messages"][0] == {"role": "system", "content": "be brief"}
 
 
+def test_groq_default_model_is_not_the_retired_llama(clean_llm_env):
+    assert groq_provider.DEFAULT_MODEL != "llama-3.1-8b-instant"
+
+
 @pytest.mark.asyncio
 async def test_groq_retries_without_response_format_when_rejected(clean_llm_env, monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "k")

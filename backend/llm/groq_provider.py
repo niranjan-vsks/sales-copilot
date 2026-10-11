@@ -10,7 +10,8 @@ from .base import LLMMessage, LLMResult, LLMUnavailable, env
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "llama-3.1-8b-instant"
+# llama-3.1-8b-instant was retired by Groq (404 model_not_found, verified 2026-10-11 with the project key).
+DEFAULT_MODEL = "qwen/qwen3.8-27b"
 _clients: Dict[str, AsyncGroq] = {}
 
 
